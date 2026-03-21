@@ -1,12 +1,74 @@
-use std::ops::{Index, IndexMut};
+pub mod matrix;
+
+use matrix::Matrix;
 
 fn main() {
     let mut grid = FluidGrid::new((10, 10), 1.0);
-    grid.velocities_x.set(0, 0, 1.0);
-    grid.velocities_y[(0, 0)] = 1.0;
+    grid.velocities_x.randomize(-1.0..=1.0);
+    grid.velocities_y.randomize(-1.0..=1.0);
+
+    println!("Divergence:");
     for x in 0..grid.cell_count.0 {
         for y in 0..grid.cell_count.1 {
-            print!("{:^3}", grid.divergence_at_cell(x, y));
+            print!("{:^5.1}", grid.divergence_at_cell(x, y));
+        }
+        println!();
+    }
+    println!("Pressure:");
+    for x in 0..grid.cell_count.0 {
+        for y in 0..grid.cell_count.1 {
+            print!("{:^5.1}", grid.get_pressure(x, y));
+        }
+        println!();
+    }
+
+    grid.pressure_solve();
+
+    println!("Divergence:");
+    for x in 0..grid.cell_count.0 {
+        for y in 0..grid.cell_count.1 {
+            print!("{:^5.1}", grid.divergence_at_cell(x, y));
+        }
+        println!();
+    }
+    println!("Pressure:");
+    for x in 0..grid.cell_count.0 {
+        for y in 0..grid.cell_count.1 {
+            print!("{:^5.1}", grid.get_pressure(x, y));
+        }
+        println!();
+    }
+
+    grid.pressure_solve();
+
+    println!("Divergence:");
+    for x in 0..grid.cell_count.0 {
+        for y in 0..grid.cell_count.1 {
+            print!("{:^5.1}", grid.divergence_at_cell(x, y));
+        }
+        println!();
+    }
+    println!("Pressure:");
+    for x in 0..grid.cell_count.0 {
+        for y in 0..grid.cell_count.1 {
+            print!("{:^5.1}", grid.get_pressure(x, y));
+        }
+        println!();
+    }
+
+    grid.pressure_solve();
+
+    println!("Divergence:");
+    for x in 0..grid.cell_count.0 {
+        for y in 0..grid.cell_count.1 {
+            print!("{:^5.1}", grid.divergence_at_cell(x, y));
+        }
+        println!();
+    }
+    println!("Pressure:");
+    for x in 0..grid.cell_count.0 {
+        for y in 0..grid.cell_count.1 {
+            print!("{:^5.1}", grid.get_pressure(x, y));
         }
         println!();
     }
@@ -36,10 +98,10 @@ impl FluidGrid {
     }
 
     pub fn divergence_at_cell(&self, x: u32, y: u32) -> f32 {
-        let top_velocity = self.velocities_y.get(x, y + 1);
-        let left_velocity = self.velocities_x.get(x, y);
-        let right_velocity = self.velocities_x.get(x + 1, y);
-        let bottom_velocity = self.velocities_y.get(x, y);
+        let top_velocity = self.velocities_y[(x, y + 1)];
+        let left_velocity = self.velocities_x[(x, y)];
+        let right_velocity = self.velocities_x[(x + 1, y)];
+        let bottom_velocity = self.velocities_y[(x, y)];
 
         // rate of change of fluid velocity in either axis
         let gradient_x = (right_velocity - left_velocity) / self.cell_size;
@@ -48,16 +110,24 @@ impl FluidGrid {
         gradient_x + gradient_y
     }
 
-    pub fn pressure_solve_cell(&mut self, x: u32, y: u32) {
-        let top_pressure = self.velocities_y.get(x, y + 1);
-        let left_pressure = self.velocities_x.get(x, y);
-        let right_pressure = self.velocities_x.get(x + 1, y);
-        let bottom_pressure = self.velocities_y.get(x, y);
+    fn get_pressure(&self, x: u32, y: u32) -> f32 {
+        if x < 0 || x >= self.cell_count.0 || y < 0 || y >= self.cell_count.1 {
+            0.0
+        } else {
+            self.pressure_map[(x, y)]
+        }
+    }
 
-        let top_velocity = self.velocities_y.get(x, y + 1);
-        let left_velocity = self.velocities_x.get(x, y);
-        let right_velocity = self.velocities_x.get(x + 1, y);
-        let bottom_velocity = self.velocities_y.get(x, y);
+    pub fn pressure_solve_cell(&mut self, x: u32, y: u32) {
+        let top_pressure = self.get_pressure(x, y + 1);
+        let left_pressure = self.get_pressure(x, y);
+        let right_pressure = self.get_pressure(x + 1, y);
+        let bottom_pressure = self.get_pressure(x, y);
+
+        let top_velocity = self.velocities_y[(x, y + 1)];
+        let left_velocity = self.velocities_x[(x, y)];
+        let right_velocity = self.velocities_x[(x + 1, y)];
+        let bottom_velocity = self.velocities_y[(x, y)];
 
         let pressure_sum = top_pressure + left_pressure + right_pressure + bottom_pressure;
         let delta_velocity_sum = right_velocity - left_velocity + top_velocity - bottom_velocity;
@@ -66,44 +136,34 @@ impl FluidGrid {
             - self.density * self.cell_size * delta_velocity_sum / self.time_step)
             / 4.0;
     }
-}
 
-struct Matrix<T> {
-    rows: u32,
-    cols: u32,
-    data: Vec<T>,
-}
-
-impl<T: Clone> Matrix<T> {
-    fn new(rows: u32, cols: u32, default: T) -> Matrix<T> {
-        Matrix {
-            rows,
-            cols,
-            data: vec![default; rows as usize * cols as usize],
+    pub fn pressure_solve(&mut self) {
+        for x in 0..self.cell_count.0 {
+            for y in 0..self.cell_count.1 {
+                self.pressure_solve_cell(x, y);
+            }
         }
     }
-}
 
-impl<T> Matrix<T> {
-    fn get(&self, row: u32, col: u32) -> &T {
-        &self.data[(row * self.cols + col) as usize]
-    }
+    pub fn update_velocities(&mut self) {
+        let k: f32 = self.time_step / (self.cell_size * self.density);
 
-    fn set(&mut self, row: u32, col: u32, value: T) {
-        self.data[(row * self.cols + col) as usize] = value;
-    }
-}
+        // ---- Horizontal -----------
+        for x in 0..self.velocities_x.width() {
+            for y in 0..self.velocities_x.height() {
+                let pressure_right = self.get_pressure(x, y);
+                let pressure_left = self.get_pressure(x - 1, y);
+                self.velocities_x[(x, y)] -= k * (pressure_right - pressure_left);
+            }
+        }
 
-impl<T> Index<(u32, u32)> for Matrix<T> {
-    type Output = T;
-
-    fn index(&self, (row, col): (u32, u32)) -> &T {
-        self.get(row, col)
-    }
-}
-
-impl<T> IndexMut<(u32, u32)> for Matrix<T> {
-    fn index_mut(&mut self, (row, col): (u32, u32)) -> &mut T {
-        &mut self.data[(row * self.cols + col) as usize]
+        // ---- Vertical -------------
+        for x in 0..self.velocities_y.width() {
+            for y in 0..self.velocities_y.height() {
+                let pressure_top = self.get_pressure(x, y);
+                let pressure_bottom = self.get_pressure(x, y - 1);
+                self.velocities_y[(x, y)] -= k * (pressure_top - pressure_bottom);
+            }
+        }
     }
 }
