@@ -44,7 +44,15 @@ fn main() {
     println!("Divergence:");
     for x in 0..grid.cell_count.0 {
         for y in 0..grid.cell_count.1 {
-            print!("{:^5.1}", grid.divergence_at_cell(x, y));
+            let div = grid.divergence_at_cell(x, y);
+            if div > 0.0 {
+                print!("\x1b[31mRouge\x1b[0m");
+            } else {
+                print!("\x1b[31mBleu\x1b[0m");
+            }
+            print!("{:^5.1}", div);
+        }
+            print!("\x1b[0m");
         }
         println!();
     }
