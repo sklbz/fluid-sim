@@ -249,7 +249,7 @@ impl FluidGrid {
         }
 
         // ---- Vertical -------------
-        for x in 0..self.velocities_y.width() - 1 {
+        for x in 0..self.velocities_y.width() {
             for y in 0..self.velocities_y.height() {
                 let edge_is_solid = self.is_solid(x, y)
                     || y.checked_sub(1)
