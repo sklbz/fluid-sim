@@ -11,6 +11,33 @@ pub struct Matrix<T> {
     data: Vec<T>,
 }
 
+pub fn bilinear(m: &Matrix<f32>, x: f32, y: f32) -> f32 {
+    let x0 = (x.floor() as i32).clamp(0, m.width() as i32 - 1) as u32;
+    let y0 = (y.floor() as i32).clamp(0, m.height() as i32 - 1) as u32;
+    let x1 = (x0 + 1).min(m.width() - 1);
+    let y1 = (y0 + 1).min(m.height() - 1);
+
+    let tx = x - x.floor();
+    let ty = y - y.floor();
+
+    let v00 = m[(x0, y0)];
+    let v10 = m[(x1, y0)];
+    let v01 = m[(x0, y1)];
+    let v11 = m[(x1, y1)];
+
+    v00 * (1.0 - tx) * (1.0 - ty) + v10 * tx * (1.0 - ty) + v01 * (1.0 - tx) * ty + v11 * tx * ty
+}
+
+impl<T: Clone> Clone for Matrix<T> {
+    fn clone(&self) -> Self {
+        Matrix {
+            rows: self.rows,
+            cols: self.cols,
+            data: self.data.clone(),
+        }
+    }
+}
+
 impl<T> Matrix<T>
 where
     T: SampleUniform + PartialOrd,

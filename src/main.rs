@@ -9,6 +9,15 @@ fn main() {
     display_divergence(&grid);
     display_pressure(&grid);
 
+    loop {
+        println!("\x1b[2J\x1b[H");
+        grid.advect_velocities();
+        grid.gauss_seidel();
+        display_divergence(&grid);
+        display_pressure(&grid);
+        sleep(Duration::from_millis(50));
+    }
+
     for _ in 0..1 {
         for _ in 0..40 {
             println!("\x1b[2J\x1b[H");
@@ -23,9 +32,6 @@ fn main() {
         grid.update_velocities();
         sleep(Duration::from_millis(20));
     }
-    display_divergence(&grid);
-    display_pressure(&grid);
-    // display_velocities(&grid);
 }
 fn display_divergence(grid: &FluidGrid) {
     println!("Divergence:");
