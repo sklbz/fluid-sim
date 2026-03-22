@@ -1,6 +1,9 @@
 use rand::RngExt;
 use rand::distr::uniform::SampleUniform;
-use std::ops::{Index, IndexMut, RangeInclusive};
+use std::{
+    iter::Sum,
+    ops::{Index, IndexMut, RangeInclusive},
+};
 
 pub struct Matrix<T> {
     rows: u32,
@@ -27,6 +30,15 @@ where
         for i in 0..self.rows * self.cols {
             self.data[i as usize] = rng.random_range(range.clone());
         }
+    }
+}
+
+impl<T> Matrix<T>
+where
+    T: Sum + std::marker::Copy,
+{
+    pub fn sum(&self) -> T {
+        self.data.iter().copied().sum()
     }
 }
 
