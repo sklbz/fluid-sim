@@ -10,7 +10,7 @@ fn main() {
     display_pressure(&grid);
 
     for _ in 0..1 {
-        for _ in 0..15 {
+        for _ in 0..40 {
             println!("\x1b[2J\x1b[H");
 
             display_divergence(&grid);
