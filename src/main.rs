@@ -60,6 +60,7 @@ fn display_pressure(grid: &FluidGrid) {
     }
 }
 
+/// Display velocities
 fn display_velocities(grid: &FluidGrid) {
     println!("Velocities X:");
     for x in 0..grid.cell_count.0 {
@@ -228,45 +229,41 @@ impl FluidGrid {
         let k: f32 = self.time_step / (self.cell_size * self.density);
 
         // ---- Horizontal -----------
-        for x in 0..self.velocities_x.width() {
-            for y in 0..self.velocities_x.height() {
-                let edge_is_solid = self.is_solid(x, y)
-                    || x.checked_sub(1)
-                        .map(|px| self.is_solid(px, y))
-                        .unwrap_or(true);
-                if edge_is_solid {
-                    self.velocities_x[(x, y)] = 0.0;
-                    continue;
-                }
-
-                let pressure_right = self.get_pressure(x, y);
-                let pressure_left = x
-                    .checked_sub(1)
-                    .map(|px| self.get_pressure(px, y))
-                    .unwrap_or(0.0);
-                self.velocities_x[(x, y)] -= k * (pressure_right - pressure_left);
+        for (x, y) in self.velocities_x.indices() {
+            let edge_is_solid = self.is_solid(x, y)
+                || x.checked_sub(1)
+                    .map(|px| self.is_solid(px, y))
+                    .unwrap_or(true);
+            if edge_is_solid {
+                self.velocities_x[(x, y)] = 0.0;
+                continue;
             }
+
+            let pressure_right = self.get_pressure(x, y);
+            let pressure_left = x
+                .checked_sub(1)
+                .map(|px| self.get_pressure(px, y))
+                .unwrap_or(0.0);
+            self.velocities_x[(x, y)] -= k * (pressure_right - pressure_left);
         }
 
         // ---- Vertical -------------
-        for x in 0..self.velocities_y.width() {
-            for y in 0..self.velocities_y.height() {
-                let edge_is_solid = self.is_solid(x, y)
-                    || y.checked_sub(1)
-                        .map(|py| self.is_solid(x, py))
-                        .unwrap_or(true);
-                if edge_is_solid {
-                    self.velocities_y[(x, y)] = 0.0;
-                    continue;
-                }
-
-                let pressure_top = self.get_pressure(x, y);
-                let pressure_bottom = y
-                    .checked_sub(1)
-                    .map(|py| self.get_pressure(x, py))
-                    .unwrap_or(0.0);
-                self.velocities_y[(x, y)] -= k * (pressure_top - pressure_bottom);
+        for (x, y) in self.velocities_y.indices() {
+            let edge_is_solid = self.is_solid(x, y)
+                || y.checked_sub(1)
+                    .map(|py| self.is_solid(x, py))
+                    .unwrap_or(true);
+            if edge_is_solid {
+                self.velocities_y[(x, y)] = 0.0;
+                continue;
             }
+
+            let pressure_top = self.get_pressure(x, y);
+            let pressure_bottom = y
+                .checked_sub(1)
+                .map(|py| self.get_pressure(x, py))
+                .unwrap_or(0.0);
+            self.velocities_y[(x, y)] -= k * (pressure_top - pressure_bottom);
         }
     }
 }

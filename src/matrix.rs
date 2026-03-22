@@ -53,9 +53,16 @@ impl<T> Matrix<T> {
         self.rows
     }
 
-    pub fn iter(&self) -> MatrixIter<T> {
+    pub fn iter(&'_ self) -> MatrixIter<'_, T> {
         MatrixIter {
             matrix: self,
+            index: 0,
+        }
+    }
+    pub fn indices(&self) -> MatrixIndices {
+        MatrixIndices {
+            cols: self.cols,
+            total: self.rows * self.cols,
             index: 0,
         }
     }
@@ -95,5 +102,25 @@ impl<'a, T> Iterator for MatrixIter<'a, T> {
         let value = self.matrix.get(row, col);
         self.index += 1;
         Some((row, col, value))
+    }
+}
+
+pub struct MatrixIndices {
+    cols: u32,
+    total: u32,
+    index: u32,
+}
+
+impl Iterator for MatrixIndices {
+    type Item = (u32, u32);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.total {
+            return None;
+        }
+        let row = self.index / self.cols;
+        let col = self.index % self.cols;
+        self.index += 1;
+        Some((row, col))
     }
 }
