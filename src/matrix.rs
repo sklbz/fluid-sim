@@ -45,16 +45,19 @@ impl<T> Matrix<T> {
         &self.data[(row * self.cols + col) as usize]
     }
 
-    fn set(&mut self, row: u32, col: u32, value: T) {
-        self.data[(row * self.cols + col) as usize] = value;
-    }
-
     pub fn width(&self) -> u32 {
         self.cols
     }
 
     pub fn height(&self) -> u32 {
         self.rows
+    }
+
+    pub fn iter(&self) -> MatrixIter<T> {
+        MatrixIter {
+            matrix: self,
+            index: 0,
+        }
     }
 }
 
@@ -69,5 +72,28 @@ impl<T> Index<(u32, u32)> for Matrix<T> {
 impl<T> IndexMut<(u32, u32)> for Matrix<T> {
     fn index_mut(&mut self, (row, col): (u32, u32)) -> &mut T {
         &mut self.data[(row * self.cols + col) as usize]
+    }
+}
+
+// The iterator struct holds a reference to the matrix and tracks position
+pub struct MatrixIter<'a, T> {
+    matrix: &'a Matrix<T>,
+    index: u32,
+}
+
+impl<'a, T> Iterator for MatrixIter<'a, T> {
+    // Each item yields the (row, col) coordinate alongside a reference to the value
+    type Item = (u32, u32, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let total = self.matrix.rows * self.matrix.cols;
+        if self.index >= total {
+            return None;
+        }
+        let row = self.index / self.matrix.cols;
+        let col = self.index % self.matrix.cols;
+        let value = self.matrix.get(row, col);
+        self.index += 1;
+        Some((row, col, value))
     }
 }
