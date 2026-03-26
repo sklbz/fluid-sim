@@ -38,8 +38,8 @@ impl FluidGrid {
             density: 1.0,
             cell_count,
             cell_size,
-            velocities_x: Matrix::new(w + 1, h, 0.0),
-            velocities_y: Matrix::new(w, h + 1, 0.0),
+            velocities_x: Matrix::new(w + 1, h, 0.5),
+            velocities_y: Matrix::new(w, h + 1, 0.5),
             pressure_map: Matrix::new(w, h, 0.0),
         }
     }
