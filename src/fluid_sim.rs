@@ -252,8 +252,12 @@ impl FluidGrid {
     }
 
     pub fn advect_velocities(&mut self) {
-        // Horizontal
+        // Horizontal advection (velocities_x)
         for (x, y) in self.velocities_x.indices() {
+            // Skip rightmost boundary (x == cell_count.0)
+            if x == self.cell_count.0 {
+                continue;
+            }
             if !self.is_fluid_edge(x, y, Left) {
                 continue;
             }
@@ -271,8 +275,12 @@ impl FluidGrid {
             }
         }
 
-        // Horizontal
+        // Vertical advection (velocities_y)
         for (x, y) in self.velocities_y.indices() {
+            // Skip topmost boundary (y == cell_count.1)
+            if y == self.cell_count.1 {
+                continue;
+            }
             if !self.is_fluid_edge(x, y, Down) {
                 continue;
             }
