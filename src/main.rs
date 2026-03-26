@@ -1,7 +1,8 @@
-//! Fluid simulation — video export.
+//! Fluid simulation — video export or lift sweep.
 //!
 //! Usage:
-//!   cargo run --release -- --video out.mp4     # render video
+//!   cargo run --release -- --video out.mp4   # render video at fixed speed
+//!   cargo run --release                       # sweep inflow 1..=20, print avg lift
 //!
 //! Modélise la portance d'un profil NACA 4412 avec angle d'attaque.
 
@@ -18,7 +19,7 @@ const SCALE: usize = 4;
 /// Nombre d'itérations Gauss-Seidel par pas de temps.
 const PRESSURE_ITERS: usize = 100;
 
-/// Vitesse d'entrée (écoulement horizontal de gauche à droite).
+/// Vitesse d'entrée (écoulement horizontal de gauche à droite) pour le mode vidéo.
 const INFLOW_SPEED: f32 = 5.0;
 
 /// Corde du profil en cellules.
@@ -29,17 +30,17 @@ const ANGLE_OF_ATTACK_DEG: f32 = 8.0;
 
 const VIDEO_FRAMES: usize = 600;
 const VIDEO_FPS: usize = 60;
-/// Nombre de frames entre chaque affichage de la moyenne de portance
+/// Nombre de frames entre chaque affichage de la moyenne de portance (mode vidéo)
 const LIFT_LOG_INTERVAL_FRAMES: usize = 20;
+
+/// Nombre de frames par vitesse en mode sweep.
+/// Les premières SWEEP_WARMUP_FRAMES sont ignorées (transitoire) ;
+/// la moyenne est calculée sur les frames suivantes.
+const SWEEP_FRAMES: usize = 400;
+const SWEEP_WARMUP_FRAMES: usize = 150;
 
 const WIN_W: usize = GRID_W as usize * SCALE;
 const WIN_H: usize = GRID_H as usize * SCALE;
-
-struct ForceStats {
-    lift_sum: f32,
-    count: usize,
-    last_log_time: std::time::Instant,
-}
 
 // ── NACA 4412 geometry ────────────────────────────────────────────────────────
 
@@ -87,18 +88,14 @@ fn naca4412(x_norm: f32) -> (f32, f32) {
 // ── Airfoil mask generation ───────────────────────────────────────────────────
 
 /// Remplit le masque `solid` avec le profil NACA 4412 tourné de `aoa_deg` degrés.
-///
-/// Le bord d'attaque est positionné à 1/4 de la grille en x,
-/// et centré verticalement.
 fn build_airfoil(grid: &mut FluidGrid, aoa_deg: f32) {
     let (w, h) = grid.cell_count;
     let chord = CHORD as f32;
 
-    // Centre de rotation : bord d’attaque (point de référence)
     let cx = w as f32 * 0.28;
     let cy = h as f32 * 0.50;
 
-    let aoa_rad = aoa_deg.to_radians(); // rotation positive = bord d’attaque vers le haut
+    let aoa_rad = aoa_deg.to_radians();
     let (sin_a, cos_a) = (aoa_rad.sin(), aoa_rad.cos());
 
     for x in 0..w {
@@ -106,7 +103,6 @@ fn build_airfoil(grid: &mut FluidGrid, aoa_deg: f32) {
             let dx = x as f32 + 0.5 - cx;
             let dy = y as f32 + 0.5 - cy;
 
-            // Rotation inverse pour se ramener dans le repère du profil non pivoté
             let local_x = dx * cos_a + dy * sin_a;
             let local_y = -dx * sin_a + dy * cos_a;
 
@@ -127,6 +123,14 @@ fn build_airfoil(grid: &mut FluidGrid, aoa_deg: f32) {
     }
 }
 
+// ── Helpers : create a fresh grid with airfoil ────────────────────────────────
+
+fn make_grid() -> FluidGrid {
+    let mut grid = FluidGrid::new((GRID_W, GRID_H), CELL_SIZE);
+    build_airfoil(&mut grid, ANGLE_OF_ATTACK_DEG);
+    grid
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
@@ -136,66 +140,126 @@ fn main() {
         .find(|w| w[0] == "--video")
         .map(|w| w[1].clone());
 
-    let mut grid = FluidGrid::new((GRID_W, GRID_H), CELL_SIZE);
-    build_airfoil(&mut grid, ANGLE_OF_ATTACK_DEG);
-
     if let Some(path) = video_out {
+        let mut grid = make_grid();
         run_video(&mut grid, &path);
+    } else {
+        run_sweep();
     }
 }
 
-// ── Inflow injection ──────────────────────────────────────────────────────────
+// ── Inflow injection (paramétrique) ──────────────────────────────────────────
 
-/// Injecte un écoulement uniforme sur toute la face gauche.
-fn inject_inflow(grid: &mut FluidGrid) {
+/// Injecte un écoulement uniforme sur toute la face gauche à la vitesse donnée.
+/// Initialise également toute la grille à cette vitesse pour éviter le transitoire.
+fn inject_inflow(grid: &mut FluidGrid, speed: f32) {
     let h = grid.cell_count.1;
 
-    // Écoulement horizontal uniforme à gauche
     for y in 0..h {
-        grid.velocities_x[(0, y)] = INFLOW_SPEED;
+        grid.velocities_x[(0, y)] = speed;
     }
-
-    // Composante verticale nulle à l’entrée
     for y in 0..=h {
         grid.velocities_y[(0, y)] = 0.0;
     }
 }
 
-fn inject_outflow(grid: &mut FluidGrid) {
+fn inject_outflow(grid: &mut FluidGrid, speed: f32) {
     let (w, h) = grid.cell_count;
 
-    // Écoulement horizontal uniforme en sortie
     for y in 0..h {
-        grid.velocities_x[(w - 1, y)] = INFLOW_SPEED;
+        grid.velocities_x[(w - 1, y)] = speed;
     }
-
-    // Composante verticale nulle en sortie
     for y in 0..=h {
         grid.velocities_y[(w - 1, y)] = 0.0;
     }
 }
 
+/// Initialise toute la grille de vitesse horizontale à `speed` (cellules fluides).
+/// Cela supprime le transitoire dû à un champ de vitesse nul au départ.
+fn init_velocity_field(grid: &mut FluidGrid, speed: f32) {
+    let (w, h) = grid.cell_count;
+
+    // velocities_x : taille (w+1) × h
+    for x in 0..=w {
+        for y in 0..h {
+            // Ne pas écraser les faces touchant un solide (elles seront gérées par enforce_walls)
+            let left_solid = x > 0 && grid.solid[(x - 1, y)];
+            let right_solid = x < w && grid.solid[(x, y)];
+            if !left_solid && !right_solid {
+                grid.velocities_x[(x, y)] = speed;
+            }
+        }
+    }
+
+    // velocities_y : taille w × (h+1) — composante verticale nulle
+    for x in 0..w {
+        for y in 0..=h {
+            grid.velocities_y[(x, y)] = 0.0;
+        }
+    }
+}
+
+// ── Sweep mode ────────────────────────────────────────────────────────────────
+
+/// Simule pour chaque vitesse entière de 1 à 20 et affiche la portance moyenne.
+fn run_sweep() {
+    println!(
+        "=== Sweep portance NACA 4412 (AoA = {}°) ===",
+        ANGLE_OF_ATTACK_DEG
+    );
+    println!(
+        "(warmup : {} frames ignorées, moyenne sur {} frames)",
+        SWEEP_WARMUP_FRAMES,
+        SWEEP_FRAMES - SWEEP_WARMUP_FRAMES
+    );
+    println!();
+
+    for speed in 1u32..=20 {
+        let speed_f = speed as f32;
+
+        // Grille fraîche par vitesse (masque solide identique, champ de vitesse réinitialisé)
+        let mut grid = make_grid();
+        init_velocity_field(&mut grid, speed_f);
+
+        let mut lift_sum = 0.0f32;
+        let mut lift_count = 0usize;
+
+        for frame in 0..SWEEP_FRAMES {
+            inject_inflow(&mut grid, speed_f);
+            inject_outflow(&mut grid, speed_f);
+            grid.step(PRESSURE_ITERS);
+
+            // On ignore les frames de warmup pour laisser le champ se stabiliser
+            if frame >= SWEEP_WARMUP_FRAMES {
+                let (_, lift) = grid.compute_forces();
+                lift_sum += lift;
+                lift_count += 1;
+            }
+        }
+
+        let avg_lift = if lift_count > 0 {
+            lift_sum / lift_count as f32
+        } else {
+            0.0
+        };
+        println!("{} : {:.4}", speed, avg_lift);
+    }
+}
+
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
-/// Colorisation :
-///   - Gris foncé  = cellule solide (profil)
-///   - Rouge       = vitesse vers la droite (surpression)
-///   - Bleu        = vitesse vers la gauche
-///   - Vert        = vitesse vers le haut (portance)
-///   - Jaune       = vitesse vers le bas (sillage)
-fn render(grid: &FluidGrid, buffer: &mut Vec<u32>) {
+fn render(grid: &FluidGrid, buffer: &mut Vec<u32>, inflow_speed: f32) {
     let (w, h) = (grid.cell_count.0 as usize, grid.cell_count.1 as usize);
 
     for x in 0..w {
         for y in 0..h {
             let color = if grid.solid[(x as u32, y as u32)] {
-                0x2C2C2A // gris anthracite = solide
+                0x2C2C2A
             } else {
                 let (vx, vy) = grid.velocity_at_center(x as u32, y as u32);
-                velocity_color(vx, vy)
+                velocity_color(vx, vy, inflow_speed)
             };
 
-            // y=0 est en bas de la physique, mais en haut du buffer écran.
             let screen_y = (h - 1 - y) * SCALE;
             let screen_x = x * SCALE;
             for dy in 0..SCALE {
@@ -207,8 +271,8 @@ fn render(grid: &FluidGrid, buffer: &mut Vec<u32>) {
     }
 }
 
-fn velocity_color(vx: f32, vy: f32) -> u32 {
-    let max_speed = INFLOW_SPEED * 1.5;
+fn velocity_color(vx: f32, vy: f32, inflow_speed: f32) -> u32 {
+    let max_speed = inflow_speed * 1.5;
     let nx = (vx / max_speed).clamp(-1.0, 1.0);
     let ny = (vy / max_speed).clamp(-1.0, 1.0);
 
@@ -229,6 +293,8 @@ fn velocity_color(vx: f32, vy: f32) -> u32 {
 fn run_video(grid: &mut FluidGrid, output_path: &str) {
     use std::io::Write;
     use std::process::{Command, Stdio};
+
+    init_velocity_field(grid, INFLOW_SPEED);
 
     println!("Rendering {VIDEO_FRAMES} frames → {output_path}");
     println!("(requires ffmpeg in PATH)");
@@ -265,34 +331,20 @@ fn run_video(grid: &mut FluidGrid, output_path: &str) {
     let stdin = ffmpeg.stdin.as_mut().unwrap();
     let mut buffer = vec![0u32; WIN_W * WIN_H];
 
-    // Statistiques de portance
-    let mut lift_sum = 0.0;
-    let mut frame_count_since_last_log = 0;
-    let mut total_frames_logged = 0;
+    let mut lift_sum = 0.0f32;
+    let mut frame_count_since_last_log = 0usize;
+    let mut total_frames_logged = 0usize;
 
     for i in 0..VIDEO_FRAMES {
-        inject_inflow(grid);
-        inject_outflow(grid);
+        inject_inflow(grid, INFLOW_SPEED);
+        inject_outflow(grid, INFLOW_SPEED);
         grid.step(PRESSURE_ITERS);
 
-        // Calculer la portance
         let (_, lift) = grid.compute_forces();
 
-        // Afficher la portance en haut à gauche
-        draw_text(
-            &mut buffer,
-            WIN_W,
-            WIN_H,
-            &format!("Lift: {:.2}", lift),
-            10,
-            10,
-            0xFFFFFF,
-        );
-        // Accumuler la portance
         lift_sum += lift;
         frame_count_since_last_log += 1;
 
-        // Afficher la moyenne tous les N frames
         if frame_count_since_last_log >= LIFT_LOG_INTERVAL_FRAMES {
             let avg_lift = lift_sum / frame_count_since_last_log as f32;
             total_frames_logged += frame_count_since_last_log;
@@ -305,12 +357,21 @@ fn run_video(grid: &mut FluidGrid, output_path: &str) {
                 frame_count_since_last_log
             );
 
-            // Réinitialiser pour le prochain intervalle
             lift_sum = 0.0;
             frame_count_since_last_log = 0;
         }
 
-        render(grid, &mut buffer);
+        render(grid, &mut buffer, INFLOW_SPEED);
+
+        draw_text(
+            &mut buffer,
+            WIN_W,
+            WIN_H,
+            &format!("Lift: {:.2}", lift),
+            10,
+            10,
+            0xFFFFFF,
+        );
 
         let bytes: Vec<u8> = buffer
             .iter()
@@ -325,7 +386,6 @@ fn run_video(grid: &mut FluidGrid, output_path: &str) {
 
         stdin.write_all(&bytes).expect("Failed to write frame");
 
-        // Afficher la progression tous les 60 frames vidéo
         if (i + 1) % VIDEO_FPS == 0 {
             println!(
                 "  {}/{VIDEO_FRAMES} frames  (div={:.4})",
@@ -335,7 +395,6 @@ fn run_video(grid: &mut FluidGrid, output_path: &str) {
         }
     }
 
-    // Afficher la moyenne du dernier intervalle partiel s'il existe
     if frame_count_since_last_log > 0 {
         let avg_lift = lift_sum / frame_count_since_last_log as f32;
         total_frames_logged += frame_count_since_last_log;
