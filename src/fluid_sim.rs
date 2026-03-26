@@ -21,6 +21,7 @@ pub struct FluidGrid {
     /// (width, height) in cells.
     pub cell_count: (u32, u32),
     pub cell_size: f32,
+    pub inflow_speed: f32,
 
     /// Horizontal velocity at x-faces.  Size: (width+1) × height.
     pub velocities_x: Matrix<f32>,
@@ -33,19 +34,34 @@ pub struct FluidGrid {
 }
 
 impl FluidGrid {
-    pub fn new(cell_count: (u32, u32), cell_size: f32) -> FluidGrid {
+    pub fn new(cell_count: (u32, u32), cell_size: f32, inflow_speed: f32) -> FluidGrid {
         let (w, h) = cell_count;
         FluidGrid {
-            time_step: 0.1,
+            time_step: 0.05,
             density: 1.0,
             cell_count,
             cell_size,
-            velocities_x: Matrix::new(w + 1, h, 0.5),
-            velocities_y: Matrix::new(w, h + 1, 0.5),
+            inflow_speed,
+            velocities_x: Matrix::new(w + 1, h, 0.0),
+            velocities_y: Matrix::new(w, h + 1, 0.0),
             pressure_map: Matrix::new(w, h, 0.0),
             solid: Matrix::new(w, h, false),
         }
     }
+
+    pub fn enforce_inflow(&mut self) {
+        let (w, h) = self.cell_count;
+        for y in 0..h {
+            self.velocities_x[(0, y)] = self.inflow_speed;
+            self.velocities_x[(w, y)] = self.inflow_speed; // outflow
+        }
+        // vy = 0 sur les bords gauche et droit
+        for y in 0..=h {
+            self.velocities_y[(0, y)] = 0.0;
+            self.velocities_y[(w - 1, y)] = 0.0;
+        }
+    }
+
     /// Calcule la force exercée par le fluide sur le solide.
     /// Retourne (force_horizontale, force_verticale) = (traînée, portance)
     /// (forces par unité de profondeur, car 2D)
@@ -54,9 +70,6 @@ impl FluidGrid {
         let mut fy = 0.0;
         let (w, h) = self.cell_count;
         let dx = self.cell_size;
-        let mu = 0.0; // viscosité dynamique (non utilisée actuellement)
-        // Si vous voulez inclure la viscosité, il faudrait définir mu = densité * nu
-        // Mais votre simulateur n'a pas de viscosité explicite, donc on met 0.
 
         // On parcourt toutes les cellules solides
         for x in 0..w {
@@ -84,13 +97,13 @@ impl FluidGrid {
                 // Face basse : x, y (normale (0, -1))
                 if !self.is_solid(x, y.saturating_sub(1)) {
                     let p = self.pressure_at(x as i32, y as i32 - 1);
-                    fy += p * dx; // n_y = -1, donc force = p * dx (vers le bas)
+                    fy -= p * dx; // n_y = -1, donc force = p * dx (vers le bas)
                 }
 
                 // Face haute : x, y+1 (normale (0, 1))
                 if !self.is_solid(x, y + 1) {
                     let p = self.pressure_at(x as i32, y as i32 + 1);
-                    fy -= p * dx; // n_y = +1, force = -p*dx (vers le haut)
+                    fy += p * dx; // n_y = +1, force = -p*dx (vers le haut)
                 }
             }
         }
@@ -322,8 +335,8 @@ impl FluidGrid {
         for _ in 0..pressure_iters {
             self.pressure_sweep();
         }
-        self.anchor_pressure();
         self.update_velocities();
+        self.enforce_inflow();
         self.enforce_walls();
     }
 

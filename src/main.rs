@@ -17,7 +17,7 @@ const CELL_SIZE: f32 = 1.0;
 const SCALE: usize = 4;
 
 /// Nombre d'itérations Gauss-Seidel par pas de temps.
-const PRESSURE_ITERS: usize = 100;
+const PRESSURE_ITERS: usize = 200;
 
 /// Vitesse d'entrée (écoulement horizontal de gauche à droite) pour le mode vidéo.
 const INFLOW_SPEED: f32 = 5.0;
@@ -28,10 +28,10 @@ const CHORD: u32 = 90;
 /// Angle d'attaque en degrés (positif = bord d'attaque vers le haut).
 const ANGLE_OF_ATTACK_DEG: f32 = 8.0;
 
-const VIDEO_FRAMES: usize = 600;
+const VIDEO_FRAMES: usize = 300;
 const VIDEO_FPS: usize = 60;
 /// Nombre de frames entre chaque affichage de la moyenne de portance (mode vidéo)
-const LIFT_LOG_INTERVAL_FRAMES: usize = 20;
+const LIFT_LOG_INTERVAL_FRAMES: usize = 60;
 
 /// Nombre de frames par vitesse en mode sweep.
 /// Les premières SWEEP_WARMUP_FRAMES sont ignorées (transitoire) ;
@@ -126,7 +126,7 @@ fn build_airfoil(grid: &mut FluidGrid, aoa_deg: f32) {
 // ── Helpers : create a fresh grid with airfoil ────────────────────────────────
 
 fn make_grid() -> FluidGrid {
-    let mut grid = FluidGrid::new((GRID_W, GRID_H), CELL_SIZE);
+    let mut grid = FluidGrid::new((GRID_W, GRID_H), CELL_SIZE, INFLOW_SPEED);
     build_airfoil(&mut grid, ANGLE_OF_ATTACK_DEG);
     grid
 }
@@ -143,6 +143,8 @@ fn main() {
     if let Some(path) = video_out {
         let mut grid = make_grid();
         run_video(&mut grid, &path);
+    } else if args.contains(&"--sweep-video".to_string()) {
+        run_sweep_videos();
     } else {
         run_sweep();
     }
@@ -171,6 +173,15 @@ fn inject_outflow(grid: &mut FluidGrid, speed: f32) {
     }
     for y in 0..=h {
         grid.velocities_y[(w - 1, y)] = 0.0;
+    }
+}
+
+fn enforce_side_flow(grid: &mut FluidGrid, speed: f32) {
+    let (w, h) = grid.cell_count;
+
+    for x in 0..w {
+        grid.velocities_x[(x, 1)] = speed;
+        grid.velocities_x[(x, h - 2)] = speed;
     }
 }
 
@@ -220,6 +231,7 @@ fn run_sweep() {
         // Grille fraîche par vitesse (masque solide identique, champ de vitesse réinitialisé)
         let mut grid = make_grid();
         init_velocity_field(&mut grid, speed_f);
+        grid.inflow_speed = speed_f;
 
         let mut lift_sum = 0.0f32;
         let mut lift_count = 0usize;
@@ -244,6 +256,129 @@ fn run_sweep() {
         };
         println!("{} : {:.4}", speed, avg_lift);
     }
+}
+
+fn run_sweep_videos() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    const SWEEP_VIDEO_SPEEDS: &[u32] = &[1, 2, 3, 4, 5, 10, 15];
+    // On rejoue exactement les frames de calcul (hors warmup)
+    let measure_frames = SWEEP_FRAMES - SWEEP_WARMUP_FRAMES;
+
+    println!(
+        "=== Sweep vidéo NACA 4412 (AoA = {}°) ===",
+        ANGLE_OF_ATTACK_DEG
+    );
+    println!("Vitesses testées : {:?}", SWEEP_VIDEO_SPEEDS);
+    println!(
+        "Warmup : {} frames (non enregistrées), vidéo : {} frames",
+        SWEEP_WARMUP_FRAMES, measure_frames
+    );
+    println!("(requires ffmpeg in PATH)");
+
+    for &speed in SWEEP_VIDEO_SPEEDS {
+        let speed_f = speed as f32;
+        let output_path = format!("sweep_speed_{:02}.mp4", speed);
+
+        println!("\n→ Vitesse {} : rendu vers {}", speed, output_path);
+
+        let mut grid = make_grid();
+        grid.inflow_speed = speed_f;
+        init_velocity_field(&mut grid, speed_f);
+
+        // Phase warmup (non enregistrée)
+        for _ in 0..SWEEP_WARMUP_FRAMES {
+            inject_inflow(&mut grid, speed_f);
+            inject_outflow(&mut grid, speed_f);
+            grid.step(PRESSURE_ITERS);
+        }
+
+        let mut ffmpeg = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "rawvideo",
+                "-pixel_format",
+                "rgb24",
+                "-video_size",
+                &format!("{WIN_W}x{WIN_H}"),
+                "-framerate",
+                &VIDEO_FPS.to_string(),
+                "-i",
+                "pipe:0",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-crf",
+                "18",
+                &output_path,
+            ])
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("Failed to start ffmpeg — is it installed?");
+
+        let stdin = ffmpeg.stdin.as_mut().unwrap();
+        let mut buffer = vec![0u32; WIN_W * WIN_H];
+        let mut lift_sum = 0.0f32;
+
+        for frame in 0..measure_frames {
+            inject_inflow(&mut grid, speed_f);
+            inject_outflow(&mut grid, speed_f);
+            grid.step(PRESSURE_ITERS);
+
+            let (_, lift) = grid.compute_forces();
+            lift_sum += lift;
+
+            render(&mut grid, &mut buffer, speed_f);
+            draw_text(
+                &mut buffer,
+                WIN_W,
+                WIN_H,
+                &format!("Lift: {:.2}", lift),
+                10,
+                10,
+                0xFFFFFF,
+            );
+            draw_text(
+                &mut buffer,
+                WIN_W,
+                WIN_H,
+                &format!("Speed: {}", speed),
+                10,
+                22,
+                0xFFFFFF,
+            );
+
+            let bytes: Vec<u8> = buffer
+                .iter()
+                .flat_map(|&p| {
+                    [
+                        ((p >> 16) & 0xFF) as u8,
+                        ((p >> 8) & 0xFF) as u8,
+                        (p & 0xFF) as u8,
+                    ]
+                })
+                .collect();
+            stdin.write_all(&bytes).expect("Failed to write frame");
+
+            if (frame + 1) % 50 == 0 {
+                println!("  {}/{} frames", frame + 1, measure_frames);
+            }
+        }
+
+        let avg_lift = lift_sum / measure_frames as f32;
+
+        drop(ffmpeg.stdin.take());
+        ffmpeg.wait().expect("ffmpeg did not finish successfully");
+        println!(
+            "  Done → {}  (portance moyenne = {:.4})",
+            output_path, avg_lift
+        );
+    }
+
+    println!("\n=== Terminé ===");
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
@@ -336,8 +471,9 @@ fn run_video(grid: &mut FluidGrid, output_path: &str) {
     let mut total_frames_logged = 0usize;
 
     for i in 0..VIDEO_FRAMES {
-        inject_inflow(grid, INFLOW_SPEED);
-        inject_outflow(grid, INFLOW_SPEED);
+        // inject_inflow(grid, INFLOW_SPEED);
+        // inject_outflow(grid, INFLOW_SPEED);
+        enforce_side_flow(grid, INFLOW_SPEED);
         grid.step(PRESSURE_ITERS);
 
         let (_, lift) = grid.compute_forces();
