@@ -11,26 +11,16 @@ fn main() {
     // display_divergence(&grid);
     // display_pressure(&grid);
 
-    let path = Path::new("/home/sklbz/code/fluid-sim/frames/-1");
-    match write(path, dump_json(&grid)) {
-        Ok(_) => println!("Successfully wrote to file"),
-        Err(e) => println!("Failed to write to file: {}", e),
-    };
-
     grid.advect_velocities();
 
-    let path = Path::new("/home/sklbz/code/fluid-sim/frames/-1advection");
-    match write(path, dump_json(&grid)) {
-        Ok(_) => println!("Successfully wrote to file"),
-        Err(e) => println!("Failed to write to file: {}", e),
-    };
-
-    grid.gauss_seidel();
-    let path = Path::new("/home/sklbz/code/fluid-sim/frames/-1gaussseidel");
-    match write(path, dump_json(&grid)) {
-        Ok(_) => println!("Successfully wrote to file"),
-        Err(e) => println!("Failed to write to file: {}", e),
-    };
+    for i in 0..10 {
+        let path = Path::new("/home/sklbz/code/fluid-sim/frames/gaussseidel").join(i.to_string());
+        match write(path, dump_json(&grid)) {
+            Ok(_) => println!("Successfully wrote to file"),
+            Err(e) => println!("Failed to write to file: {}", e),
+        };
+        grid.gauss_seidel();
+    }
 
     return;
     for i in 0..100 {
