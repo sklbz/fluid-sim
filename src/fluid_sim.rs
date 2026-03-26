@@ -166,20 +166,19 @@ impl FluidGrid {
 
         // ---- Horizontal -----------
         for (x, y) in self.velocities_x.indices() {
-            /*
             if x == 0 {
                 self.velocities_x[(x, y)] = 20.0;
                 continue;
             }
-            */
-            let edge_is_solid = self.is_solid(x, y)
-                || x.checked_sub(1)
-                    .map(|px| self.is_solid(px, y))
-                    .unwrap_or(true);
-            if edge_is_solid {
-                self.velocities_x[(x, y)] = 0.0;
-                continue;
-            }
+
+            // let edge_is_solid = self.is_solid(x, y)
+            //     || x.checked_sub(1)
+            //         .map(|px| self.is_solid(px, y))
+            //         .unwrap_or(true);
+            // if edge_is_solid {
+            //     self.velocities_x[(x, y)] = 0.0;
+            //     continue;
+            // }
 
             let pressure_right = self.get_pressure(x, y);
             let pressure_left = x
@@ -191,14 +190,14 @@ impl FluidGrid {
 
         // ---- Vertical -------------
         for (x, y) in self.velocities_y.indices() {
-            let edge_is_solid = self.is_solid(x, y)
-                || y.checked_sub(1)
-                    .map(|py| self.is_solid(x, py))
-                    .unwrap_or(true);
-            if edge_is_solid {
-                self.velocities_y[(x, y)] = 0.0;
-                continue;
-            }
+            // let edge_is_solid = self.is_solid(x, y)
+            //     || y.checked_sub(1)
+            //         .map(|py| self.is_solid(x, py))
+            //         .unwrap_or(true);
+            // if edge_is_solid {
+            //     self.velocities_y[(x, y)] = 0.0;
+            //     continue;
+            // }
 
             let pressure_top = self.get_pressure(x, y);
             let pressure_bottom = y
@@ -210,7 +209,7 @@ impl FluidGrid {
     }
 
     pub fn gauss_seidel(&mut self) {
-        for _ in 0..1 {
+        for _ in 0..10 {
             self.pressure_solve();
         }
 

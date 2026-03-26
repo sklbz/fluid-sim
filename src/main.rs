@@ -26,27 +26,22 @@ fn main() {
         grid.velocities_y[(x, y)] = strength * dx / (r2 + 1.0);
     }
 
-    grid.advect_velocities();
+    grid.velocities_x.randomize(5.0..=15.0);
+    grid.velocities_y.randomize(5.0..=15.0);
 
-    for i in 0..10 {
-        let text = format!(
-            "/home/sklbz/code/fluid-sim/frames/vortex_gaussseidel{}.json",
-            i
-        );
-        let path = Path::new(&text);
-        match write(path, dump_json(&grid)) {
-            Ok(_) => println!("Successfully wrote to file"),
-            Err(e) => println!("Failed to write to file: {}", e),
-        };
-        grid.gauss_seidel();
-    }
+    let name = "/home/sklbz/code/fluid-sim/frames/start.json".to_string();
+    let path = Path::new(&name);
+    match write(path, dump_json(&grid)) {
+        Ok(_) => println!("Successfully wrote to file"),
+        Err(e) => println!("Failed to write to file: {}", e),
+    };
 
-    return;
     for i in 0..100 {
         grid.advect_velocities();
         grid.gauss_seidel();
 
-        let path = Path::new("/home/sklbz/code/fluid-sim/frames/").join(i.to_string());
+        let name = format!("/home/sklbz/code/fluid-sim/frames/frame_{}.json", i);
+        let path = Path::new(&name);
         match write(path, dump_json(&grid)) {
             Ok(_) => println!("Successfully wrote to file"),
             Err(e) => println!("Failed to write to file: {}", e),
