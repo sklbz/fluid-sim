@@ -11,10 +11,13 @@ fn main() {
 
     loop {
         println!("\x1b[2J\x1b[H");
+
         grid.advect_velocities();
         grid.gauss_seidel();
+
         display_divergence(&grid);
         display_pressure(&grid);
+
         sleep(Duration::from_millis(50));
     }
 

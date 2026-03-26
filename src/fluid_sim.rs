@@ -1,6 +1,5 @@
 use crate::Direction;
 use crate::Matrix;
-use crate::bilinear;
 use Direction::*;
 
 pub struct FluidGrid {
@@ -212,76 +211,15 @@ impl FluidGrid {
     }
 
     pub fn advect_velocities(&mut self) {
-        let dt = self.time_step;
-        let dx = self.cell_size;
-
-        // Advection de velocities_x
-        let old_vx = self.velocities_x.clone();
-        let old_vy = self.velocities_y.clone();
-
-        for x in 0..self.velocities_x.width() {
-            for y in 0..self.velocities_x.height() {
-                if self.is_solid(x, y)
-                    || x.checked_sub(1)
-                        .map(|px| self.is_solid(px, y))
-                        .unwrap_or(true)
-                {
-                    continue;
-                }
-                // Position du bord en coordonnées monde
-                let px = x as f32 * dx;
-                let py = (y as f32 + 0.5) * dx;
-
-                // Vitesse à ce point (interpolée)
-                let vx = self.sample_vx(&old_vx, px, py, dx);
-                let vy = self.sample_vy(&old_vy, px, py, dx);
-
-                // Remonter en arrière
-                let prev_x = px - vx * dt;
-                let prev_y = py - vy * dt;
-
-                // Interpoler la vitesse à la position précédente
-                self.velocities_x[(x, y)] = self.sample_vx(&old_vx, prev_x, prev_y, dx);
+        // Horizontal
+        for (x, y) in self.velocities_x.indices() {
+            if !self.is_fluid_edge(x, y, Left) {
+                continue;
             }
+            let pos = self.left_edge_center(x, y);
+            let velocity = self.get_velocity(pos);
+            let prev_pos = pos - velocity * self.time_step;
+            self.velocities_x[(x, y)] = self.get_velocity(prev_pos).0;
         }
-
-        // Advection de velocities_y
-        for x in 0..self.velocities_y.width() {
-            for y in 0..self.velocities_y.height() {
-                if self.is_solid(x, y)
-                    || y.checked_sub(1)
-                        .map(|py| self.is_solid(x, py))
-                        .unwrap_or(true)
-                {
-                    continue;
-                }
-                let px = (x as f32 + 0.5) * dx;
-                let py = y as f32 * dx;
-
-                let vx = self.sample_vx(&old_vx, px, py, dx);
-                let vy = self.sample_vy(&old_vy, px, py, dx);
-
-                let prev_x = px - vx * dt;
-                let prev_y = py - vy * dt;
-
-                self.velocities_y[(x, y)] = self.sample_vy(&old_vy, prev_x, prev_y, dx);
-            }
-        }
-    }
-
-    // Interpolation bilinéaire pour velocities_x
-    // Les bords X sont à x=0,1,...,width et y=0.5,1.5,...
-    fn sample_vx(&self, vx: &Matrix<f32>, px: f32, py: f32, dx: f32) -> f32 {
-        let x = px / dx;
-        let y = py / dx - 0.5;
-        bilinear(vx, x, y)
-    }
-
-    // Interpolation bilinéaire pour velocities_y
-    // Les bords Y sont à x=0.5,1.5,... et y=0,1,...,height
-    fn sample_vy(&self, vy: &Matrix<f32>, px: f32, py: f32, dx: f32) -> f32 {
-        let x = px / dx - 0.5;
-        let y = py / dx;
-        bilinear(vy, x, y)
     }
 }
