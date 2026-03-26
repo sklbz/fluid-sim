@@ -1,6 +1,7 @@
 pub mod direction;
 pub mod fluid_sim;
 pub mod matrix;
+pub mod vector;
 
 pub use direction::Direction;
 pub use fluid_sim::FluidGrid;

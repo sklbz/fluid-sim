@@ -1,4 +1,6 @@
 use fluid_sim::FluidGrid;
+use std::fs::write;
+use std::path::Path;
 use std::{thread::sleep, time::Duration};
 
 fn main() {
@@ -6,19 +8,31 @@ fn main() {
     grid.velocities_x.randomize(-10.0..=10.0);
     grid.velocities_y.randomize(-10.0..=10.0);
 
-    display_divergence(&grid);
-    display_pressure(&grid);
+    // display_divergence(&grid);
+    // display_pressure(&grid);
 
+    for i in 0..10 {
+        grid.advect_velocities();
+        grid.gauss_seidel();
+        let path = Path::new("/home/sklbz/code/fluid-sim/frames/").join(i.to_string());
+        match write(path, dump_json(&grid)) {
+            Ok(_) => println!("Successfully wrote to file"),
+            Err(e) => println!("Failed to write to file: {}", e),
+        };
+    }
+
+    return;
     loop {
         println!("\x1b[2J\x1b[H");
 
-        grid.advect_velocities();
+        // grid.advect_velocities();
         grid.gauss_seidel();
 
         display_divergence(&grid);
         display_pressure(&grid);
+        println!("{}", dump_json(&grid));
 
-        sleep(Duration::from_millis(50));
+        sleep(Duration::from_millis(5000));
     }
 
     for _ in 0..1 {
@@ -35,6 +49,53 @@ fn main() {
         grid.update_velocities();
         sleep(Duration::from_millis(20));
     }
+}
+
+fn dump_json(grid: &FluidGrid) -> String {
+    let cx = grid.cell_count.0 as usize;
+    let cy = grid.cell_count.1 as usize;
+
+    let fmt = |v: &[f32]| {
+        let s: Vec<String> = v.iter().map(|x| format!("{:.4}", x)).collect();
+        format!("[{}]", s.join(","))
+    };
+
+    let pressure: Vec<String> = (0..cx)
+        .map(|x| {
+            let col: Vec<f32> = (0..cy)
+                .map(|y| grid.pressure_map[(x as u32, y as u32)])
+                .collect();
+            fmt(&col)
+        })
+        .collect();
+
+    let vx: Vec<String> = (0..=cx)
+        .map(|x| {
+            let col: Vec<f32> = (0..cy)
+                .map(|y| grid.velocities_x[(x as u32, y as u32)])
+                .collect();
+            fmt(&col)
+        })
+        .collect();
+
+    let vy: Vec<String> = (0..cx)
+        .map(|x| {
+            let col: Vec<f32> = (0..=cy)
+                .map(|y| grid.velocities_y[(x as u32, y as u32)])
+                .collect();
+            fmt(&col)
+        })
+        .collect();
+
+    format!(
+        r#"{{"cell_count":[{},{}],"cell_size":{:.4},"pressure":[{}],"velocities_x":[{}],"velocities_y":[{}]}}"#,
+        cx,
+        cy,
+        grid.cell_size,
+        pressure.join(","),
+        vx.join(","),
+        vy.join(",")
+    )
 }
 fn display_divergence(grid: &FluidGrid) {
     println!("Divergence:");

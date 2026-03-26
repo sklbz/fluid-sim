@@ -1,5 +1,6 @@
 use crate::Direction;
 use crate::Matrix;
+use crate::vector::Vector2;
 use Direction::*;
 
 pub struct FluidGrid {
@@ -210,16 +211,83 @@ impl FluidGrid {
         self.update_velocities();
     }
 
+    pub fn get_horizontal_velocity(&self, x: f32, y: f32) -> f32 {
+        let current_x = x.floor() as u32;
+        let ratio_x = x - current_x as f32;
+        let current_y = y.floor() as u32;
+        let left_velocity = self.velocities_x[(current_x, current_y)];
+        let right_velocity = self.velocities_x[(current_x + 1, current_y)];
+        left_velocity * (1.0 - ratio_x) + right_velocity * ratio_x
+    }
+
+    pub fn get_vertical_velocity(&self, x: f32, y: f32) -> f32 {
+        let current_x = x.floor() as u32;
+        let current_y = y.floor() as u32;
+        let ratio_y = y - current_y as f32;
+        let top_velocity = self.velocities_y[(current_x, current_y)];
+        let bottom_velocity = self.velocities_y[(current_x, current_y + 1)];
+        top_velocity * (1.0 - ratio_y) + bottom_velocity * ratio_y
+    }
+
+    pub fn get_velocity(&self, pos: Vector2<f32>) -> Vector2<f32> {
+        Vector2::new(
+            self.get_horizontal_velocity(pos.x, pos.y),
+            self.get_vertical_velocity(pos.x, pos.y),
+        )
+    }
+
+    pub fn get_displacement(&self, pos: &Vector2<f32>) -> Vector2<f32> {
+        Vector2::new(
+            self.time_step * self.get_horizontal_velocity(pos.x, pos.y),
+            self.time_step * self.get_vertical_velocity(pos.x, pos.y),
+        )
+    }
+
+    fn left_edge_center_pos(&self, x: u32, y: u32) -> Vector2<f32> {
+        Vector2::new(x as f32 + 0.5, y as f32)
+    }
+
+    fn top_edge_center_pos(&self, x: u32, y: u32) -> Vector2<f32> {
+        Vector2::new(x as f32, y as f32 + 0.5)
+    }
+
     pub fn advect_velocities(&mut self) {
         // Horizontal
         for (x, y) in self.velocities_x.indices() {
             if !self.is_fluid_edge(x, y, Left) {
                 continue;
             }
-            let pos = self.left_edge_center(x, y);
-            let velocity = self.get_velocity(pos);
-            let prev_pos = pos - velocity * self.time_step;
-            self.velocities_x[(x, y)] = self.get_velocity(prev_pos).0;
+
+            let pos = self.left_edge_center_pos(x, y);
+            let velocity = self.get_displacement(&pos);
+            let prev_pos = pos - velocity;
+
+            if !(prev_pos.x < 0.0
+                || prev_pos.y < 0.0
+                || prev_pos.x >= self.cell_count.0 as f32
+                || prev_pos.y >= self.cell_count.1 as f32)
+            {
+                self.velocities_x[(x, y)] = self.get_horizontal_velocity(prev_pos.x, prev_pos.y);
+            }
+        }
+
+        // Horizontal
+        for (x, y) in self.velocities_y.indices() {
+            if !self.is_fluid_edge(x, y, Down) {
+                continue;
+            }
+
+            let pos = self.top_edge_center_pos(x, y);
+            let velocity = self.get_displacement(&pos);
+            let prev_pos = pos - velocity;
+
+            if !(prev_pos.x < 0.0
+                || prev_pos.y < 0.0
+                || prev_pos.x >= self.cell_count.0 as f32
+                || prev_pos.y >= self.cell_count.1 as f32)
+            {
+                self.velocities_y[(x, y)] = self.get_vertical_velocity(prev_pos.x, prev_pos.y);
+            }
         }
     }
 }
