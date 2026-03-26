@@ -166,6 +166,11 @@ impl FluidGrid {
 
         // ---- Horizontal -----------
         for (x, y) in self.velocities_x.indices() {
+            if x == 0 {
+                self.velocities_x[(x, y)] = 20.0;
+                continue;
+            }
+
             let edge_is_solid = self.is_solid(x, y)
                 || x.checked_sub(1)
                     .map(|px| self.is_solid(px, y))
@@ -204,7 +209,7 @@ impl FluidGrid {
     }
 
     pub fn gauss_seidel(&mut self) {
-        for _ in 0..40 {
+        for _ in 0..1 {
             self.pressure_solve();
         }
 
