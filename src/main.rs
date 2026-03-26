@@ -5,29 +5,24 @@ use std::{thread::sleep, time::Duration};
 
 fn main() {
     let mut grid = FluidGrid::new((10, 10), 1.0);
+    grid.velocities_x.randomize(4.0..=5.0);
+    grid.velocities_y.randomize(4.0..=5.0);
 
-    // Initialize a vortex that goes to zero at the walls
     for (x, y) in grid.velocities_x.indices() {
-        let cx = grid.cell_count.0 as f32 / 2.0;
-        let cy = grid.cell_count.1 as f32 / 2.0;
-        let dx = (x as f32) - cx;
-        let dy = (y as f32 + 0.5) - cy; // staggered position
-        let r2 = dx * dx + dy * dy;
-        let strength = 10.0;
-        grid.velocities_x[(x, y)] = -strength * dy / (r2 + 1.0);
-    }
-    for (x, y) in grid.velocities_y.indices() {
-        let cx = grid.cell_count.0 as f32 / 2.0;
-        let cy = grid.cell_count.1 as f32 / 2.0;
-        let dx = (x as f32 + 0.5) - cx;
-        let dy = (y as f32) - cy;
-        let r2 = dx * dx + dy * dy;
-        let strength = 10.0;
-        grid.velocities_y[(x, y)] = strength * dx / (r2 + 1.0);
+        if x == 0 {
+            grid.velocities_x[(x, y)] = 15.0;
+        }
     }
 
-    grid.velocities_x.randomize(5.0..=15.0);
-    grid.velocities_y.randomize(5.0..=15.0);
+    // for (x, y) in grid.velocities_y.indices() {
+    //     let cx = grid.cell_count.0 as f32 / 2.0;
+    //     let cy = grid.cell_count.1 as f32 / 2.0;
+    //     let dx = (x as f32 + 0.5) - cx;
+    //     let dy = (y as f32) - cy;
+    //     let r2 = dx * dx + dy * dy;
+    //     let strength = 10.0;
+    //     grid.velocities_y[(x, y)] = strength * dx / (r2 + 1.0);
+    // }
 
     let name = "/home/sklbz/code/fluid-sim/frames/start.json".to_string();
     let path = Path::new(&name);
@@ -36,7 +31,7 @@ fn main() {
         Err(e) => println!("Failed to write to file: {}", e),
     };
 
-    for i in 0..100 {
+    for i in 0..50 {
         grid.advect_velocities();
         grid.gauss_seidel();
 
