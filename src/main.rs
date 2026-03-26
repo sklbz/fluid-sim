@@ -5,16 +5,35 @@ use std::{thread::sleep, time::Duration};
 
 fn main() {
     let mut grid = FluidGrid::new((10, 10), 1.0);
-    grid.velocities_x.randomize(10.0..=10.0);
-    grid.velocities_y.randomize(10.0..=10.0);
 
-    // display_divergence(&grid);
-    // display_pressure(&grid);
+    // Initialize a vortex that goes to zero at the walls
+    for (x, y) in grid.velocities_x.indices() {
+        let cx = grid.cell_count.0 as f32 / 2.0;
+        let cy = grid.cell_count.1 as f32 / 2.0;
+        let dx = (x as f32) - cx;
+        let dy = (y as f32 + 0.5) - cy; // staggered position
+        let r2 = dx * dx + dy * dy;
+        let strength = 10.0;
+        grid.velocities_x[(x, y)] = -strength * dy / (r2 + 1.0);
+    }
+    for (x, y) in grid.velocities_y.indices() {
+        let cx = grid.cell_count.0 as f32 / 2.0;
+        let cy = grid.cell_count.1 as f32 / 2.0;
+        let dx = (x as f32 + 0.5) - cx;
+        let dy = (y as f32) - cy;
+        let r2 = dx * dx + dy * dy;
+        let strength = 10.0;
+        grid.velocities_y[(x, y)] = strength * dx / (r2 + 1.0);
+    }
 
     grid.advect_velocities();
 
     for i in 0..10 {
-        let path = Path::new("/home/sklbz/code/fluid-sim/frames/gaussseidel").join(i.to_string());
+        let text = format!(
+            "/home/sklbz/code/fluid-sim/frames/vortex_gaussseidel{}.json",
+            i
+        );
+        let path = Path::new(&text);
         match write(path, dump_json(&grid)) {
             Ok(_) => println!("Successfully wrote to file"),
             Err(e) => println!("Failed to write to file: {}", e),
