@@ -1,5 +1,6 @@
-use core::f32;
-use std::ops::{Add, Sub};
+use std::ops::{Add, Mul, Sub};
+
+#[derive(Clone, Copy)]
 pub struct Vector2<T> {
     pub x: T,
     pub y: T,
@@ -13,22 +14,21 @@ impl<T> Vector2<T> {
 
 impl Add for Vector2<f32> {
     type Output = Vector2<f32>;
-
-    fn add(self, other: Vector2<f32>) -> Vector2<f32> {
-        Vector2 {
-            x: self.x + other.x,
-            y: self.y + other.y,
-        }
+    fn add(self, o: Vector2<f32>) -> Vector2<f32> {
+        Vector2::new(self.x + o.x, self.y + o.y)
     }
 }
 
 impl Sub for Vector2<f32> {
     type Output = Vector2<f32>;
+    fn sub(self, o: Vector2<f32>) -> Vector2<f32> {
+        Vector2::new(self.x - o.x, self.y - o.y)
+    }
+}
 
-    fn sub(self, other: Vector2<f32>) -> Vector2<f32> {
-        Vector2 {
-            x: self.x - other.x,
-            y: self.y - other.y,
-        }
+impl Mul<f32> for Vector2<f32> {
+    type Output = Vector2<f32>;
+    fn mul(self, s: f32) -> Vector2<f32> {
+        Vector2::new(self.x * s, self.y * s)
     }
 }

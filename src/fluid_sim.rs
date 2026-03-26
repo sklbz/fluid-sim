@@ -1,53 +1,56 @@
-use crate::Direction;
+//! MAC (Marker-And-Cell) staggered-grid incompressible fluid simulator.
+//!
+//! Grid layout for a cell (x, y) that occupies [x, x+1] × [y, y+1]:
+//!   • pressure  p    stored at cell centre  (x+0.5, y+0.5)
+//!   • x-velocity u   stored at left/right faces  (x,     y+0.5)  → `velocities_x`
+//!   • y-velocity v   stored at bottom/top  faces  (x+0.5, y    )  → `velocities_y`
+//!
+//! Simulation step (per frame):
+//!   1. Caller sets inflow / boundary values.
+//!   2. `advect_velocities`  – semi-Lagrangian advection of u and v.
+//!   3. `advect_smoke`       – advect the dye scalar.
+//!   4. `pressure_projection`– Gauss-Seidel pressure solve + velocity correction.
+//!   5. `enforce_walls`      – hard-set no-penetration on top/bottom walls.
+
+use crate::Direction::{self, Down, Left, Right, Up};
 use crate::Matrix;
-use crate::vector::Vector2;
-use Direction::*;
+use crate::matrix::bilinear;
 
 pub struct FluidGrid {
     pub time_step: f32,
     pub density: f32,
-    pub cell_count: (u32, u32), /*(x,y)*/
+    /// (width, height) in cells.
+    pub cell_count: (u32, u32),
     pub cell_size: f32,
+
+    /// Horizontal velocity at x-faces.  Size: (width+1) × height.
     pub velocities_x: Matrix<f32>,
+    /// Vertical velocity at y-faces.    Size: width × (height+1).
     pub velocities_y: Matrix<f32>,
+    /// Pressure at cell centres.        Size: width × height.
     pub pressure_map: Matrix<f32>,
+    /// Advected dye / smoke scalar.     Size: width × height.  Range [0,1].
+    pub smoke: Matrix<f32>,
 }
 
 impl FluidGrid {
     pub fn new(cell_count: (u32, u32), cell_size: f32) -> FluidGrid {
+        let (w, h) = cell_count;
         FluidGrid {
             time_step: 0.1,
             density: 1.0,
             cell_count,
             cell_size,
-            velocities_x: Matrix::new(cell_count.0 + 1, cell_count.1, 0.0),
-            velocities_y: Matrix::new(cell_count.0, cell_count.1 + 1, 0.0),
-            pressure_map: Matrix::new(cell_count.0, cell_count.1, 0.0),
+            velocities_x: Matrix::new(w + 1, h, 0.0),
+            velocities_y: Matrix::new(w, h + 1, 0.0),
+            pressure_map: Matrix::new(w, h, 0.0),
+            smoke: Matrix::new(w, h, 0.0),
         }
     }
 
-    pub fn divergence_at_cell(&self, x: u32, y: u32) -> f32 {
-        let flow = self.flow_around_cell(x, y);
-        let (top_velocity, left_velocity, right_velocity, bottom_velocity) =
-            self.get_neighbor_velocity(x, y, flow);
-
-        // rate of change of fluid velocity in either axis
-        let gradient_x = (right_velocity - left_velocity) / self.cell_size;
-        let gradient_y = (top_velocity - bottom_velocity) / self.cell_size;
-
-        gradient_x + gradient_y
-    }
-
-    pub fn get_pressure(&self, x: u32, y: u32) -> f32 {
-        if x >= self.cell_count.0 || y >= self.cell_count.1 {
-            0.0
-        } else {
-            self.pressure_map[(x, y)]
-        }
-    }
+    // ── Helpers ──────────────────────────────────────────────────────────────
 
     fn is_solid(&self, x: u32, y: u32) -> bool {
-        /* x == 0 || y == 0 ||*/
         x >= self.cell_count.0 || y >= self.cell_count.1
     }
 
@@ -62,7 +65,7 @@ impl FluidGrid {
         }
     }
 
-    fn is_fluid_edge_float(&self, x: u32, y: u32, dir: Direction) -> f32 {
+    fn fluid_edge_f(&self, x: u32, y: u32, dir: Direction) -> f32 {
         if self.is_fluid_edge(x, y, dir) {
             1.0
         } else {
@@ -70,237 +73,251 @@ impl FluidGrid {
         }
     }
 
-    fn get_neighbor_pressure(
-        &self,
-        x: u32,
-        y: u32,
-        flow: (f32, f32, f32, f32),
-    ) -> (f32, f32, f32, f32) {
-        let top_pressure = self.get_pressure(x, y + 1);
-        let left_pressure = if x == 0 {
-            0.0
-        } else {
-            self.get_pressure(x - 1, y)
-        };
-        let right_pressure = self.get_pressure(x + 1, y);
-        let bottom_pressure = if y == 0 {
-            0.0
-        } else {
-            self.get_pressure(x, y - 1)
-        };
-
+    fn flow_around_cell(&self, x: u32, y: u32) -> (f32, f32, f32, f32) {
         (
-            top_pressure * flow.0,
-            left_pressure * flow.1,
-            right_pressure * flow.2,
-            bottom_pressure * flow.3,
+            self.fluid_edge_f(x, y, Up),
+            self.fluid_edge_f(x, y, Left),
+            self.fluid_edge_f(x, y, Right),
+            self.fluid_edge_f(x, y, Down),
         )
     }
 
-    fn get_neighbor_velocity(
-        &self,
-        x: u32,
-        y: u32,
-        flow: (f32, f32, f32, f32),
-    ) -> (f32, f32, f32, f32) {
-        let top_velocity = self.velocities_y[(x, y + 1)] * flow.0;
-        let left_velocity = self.velocities_x[(x, y)] * flow.1;
-        let right_velocity = self.velocities_x[(x + 1, y)] * flow.2;
-        let bottom_velocity = self.velocities_y[(x, y)] * flow.3;
-
-        (top_velocity, left_velocity, right_velocity, bottom_velocity)
+    /// Pressure at (x,y), returning 0 for out-of-domain cells (ghost pressure = 0).
+    fn pressure_at(&self, x: i32, y: i32) -> f32 {
+        if x < 0 || y < 0 || x >= self.cell_count.0 as i32 || y >= self.cell_count.1 as i32 {
+            0.0
+        } else {
+            self.pressure_map[(x as u32, y as u32)]
+        }
     }
 
-    fn flow_around_cell(&self, x: u32, y: u32) -> (f32, f32, f32, f32) {
-        let flow_top = self.is_fluid_edge_float(x, y, Up);
-        let flow_left = self.is_fluid_edge_float(x, y, Left);
-        let flow_right = self.is_fluid_edge_float(x, y, Right);
-        let flow_bottom = self.is_fluid_edge_float(x, y, Down);
+    // ── Velocity sampling ────────────────────────────────────────────────────
 
-        (flow_top, flow_left, flow_right, flow_bottom)
+    /// Sample u (x-velocity) at arbitrary grid position (px, py).
+    ///
+    /// u is stored at face (i, j+0.5), so in storage coordinates the sample
+    /// point becomes (px,  py − 0.5).
+    pub fn sample_vx(&self, px: f32, py: f32) -> f32 {
+        let gx = px.clamp(0.0, self.cell_count.0 as f32);
+        let gy = (py - 0.5).clamp(0.0, (self.cell_count.1 - 1) as f32);
+        bilinear(&self.velocities_x, gx, gy)
     }
 
-    pub fn pressure_solve_cell(&mut self, x: u32, y: u32) {
-        let flow = self.flow_around_cell(x, y);
+    /// Sample v (y-velocity) at arbitrary grid position (px, py).
+    ///
+    /// v is stored at face (i+0.5, j), so storage coordinates become (px − 0.5, py).
+    pub fn sample_vy(&self, px: f32, py: f32) -> f32 {
+        let gx = (px - 0.5).clamp(0.0, (self.cell_count.0 - 1) as f32);
+        let gy = py.clamp(0.0, self.cell_count.1 as f32);
+        bilinear(&self.velocities_y, gx, gy)
+    }
 
-        let fluid_edge_count = flow.0 + flow.1 + flow.2 + flow.3;
-        if self.is_solid(x, y) || fluid_edge_count == 0.0 {
-            self.pressure_map[(x, y)] = 0.0;
-            return;
+    /// Velocity vector at cell-centre position.
+    pub fn velocity_at_center(&self, x: u32, y: u32) -> (f32, f32) {
+        let px = x as f32 + 0.5;
+        let py = y as f32 + 0.5;
+        (self.sample_vx(px, py), self.sample_vy(px, py))
+    }
+
+    // ── Advection ────────────────────────────────────────────────────────────
+
+    /// Semi-Lagrangian advection of both velocity components.
+    ///
+    /// Fixed bugs vs. original:
+    ///   1. Uses a clone so earlier cells don't corrupt later ones.
+    ///   2. Face positions are correct: u-face at (x, y+0.5), v-face at (x+0.5, y).
+    ///   3. Bilinear interpolation in both axes.
+    pub fn advect_velocities(&mut self) {
+        let vx_old = self.velocities_x.clone();
+        let vy_old = self.velocities_y.clone();
+        let (w, h) = self.cell_count;
+        let dt = self.time_step;
+
+        // Closures sampling from the *old* (pre-step) velocity fields.
+        let old_vx = |px: f32, py: f32| -> f32 {
+            let gx = px.clamp(0.0, w as f32);
+            let gy = (py - 0.5).clamp(0.0, (h - 1) as f32);
+            bilinear(&vx_old, gx, gy)
+        };
+        let old_vy = |px: f32, py: f32| -> f32 {
+            let gx = (px - 0.5).clamp(0.0, (w - 1) as f32);
+            let gy = py.clamp(0.0, h as f32);
+            bilinear(&vy_old, gx, gy)
+        };
+
+        // ---- Advect u (x-faces) -------------------------------------------------
+        // u[(x,y)] lives at continuous position (x, y+0.5).
+        // Skip x=0 (inflow, set by caller each step).
+        for x in 1..=(w) {
+            for y in 0..h {
+                let px = x as f32;
+                let py = y as f32 + 0.5;
+                let vel_x = old_vx(px, py);
+                let vel_y = old_vy(px, py);
+                let prev_x = (px - dt * vel_x).clamp(0.0, w as f32);
+                let prev_y = (py - dt * vel_y).clamp(0.5, h as f32 - 0.5);
+                self.velocities_x[(x, y)] = old_vx(prev_x, prev_y);
+            }
         }
 
-        let (top_pressure, left_pressure, right_pressure, bottom_pressure) =
-            self.get_neighbor_pressure(x, y, flow);
-        let (top_velocity, left_velocity, right_velocity, bottom_velocity) =
-            self.get_neighbor_velocity(x, y, flow);
-
-        let pressure_sum = top_pressure + left_pressure + right_pressure + bottom_pressure;
-        let delta_velocity_sum = right_velocity - left_velocity + top_velocity - bottom_velocity;
-
-        self.pressure_map[(x, y)] = (pressure_sum
-            - self.density * self.cell_size * delta_velocity_sum / self.time_step)
-            / fluid_edge_count;
+        // ---- Advect v (y-faces) -------------------------------------------------
+        // v[(x,y)] lives at continuous position (x+0.5, y).
+        // Skip y=0 and y=h (top/bottom walls, enforced later).
+        for x in 0..w {
+            for y in 1..h {
+                let px = x as f32 + 0.5;
+                let py = y as f32;
+                let vel_x = old_vx(px, py);
+                let vel_y = old_vy(px, py);
+                let prev_x = (px - dt * vel_x).clamp(0.5, w as f32 - 0.5);
+                let prev_y = (py - dt * vel_y).clamp(0.0, h as f32);
+                self.velocities_y[(x, y)] = old_vy(prev_x, prev_y);
+            }
+        }
     }
 
-    pub fn pressure_solve(&mut self) {
+    /// Semi-Lagrangian advection of the smoke scalar.
+    pub fn advect_smoke(&mut self) {
+        let smoke_old = self.smoke.clone();
+        let (w, h) = self.cell_count;
+        let dt = self.time_step;
+
+        for x in 0..w {
+            for y in 0..h {
+                // Cell centre in grid space.
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                let vx = self.sample_vx(px, py);
+                let vy = self.sample_vy(px, py);
+                // Trace backward.
+                let prev_px = (px - dt * vx).clamp(0.5, w as f32 - 0.5);
+                let prev_py = (py - dt * vy).clamp(0.5, h as f32 - 0.5);
+                // Convert to smoke-array coordinates (smoke[(i,j)] sits at (i+0.5, j+0.5)).
+                self.smoke[(x, y)] = bilinear(&smoke_old, prev_px - 0.5, prev_py - 0.5);
+            }
+        }
+    }
+
+    // ── Pressure projection ───────────────────────────────────────────────────
+
+    /// One Gauss-Seidel sweep over all cells.
+    fn pressure_sweep(&mut self) {
         for x in 0..self.cell_count.0 {
             for y in 0..self.cell_count.1 {
                 self.pressure_solve_cell(x, y);
             }
         }
-
-        self.anchor_pressure();
     }
 
+    fn pressure_solve_cell(&mut self, x: u32, y: u32) {
+        if self.is_solid(x, y) {
+            return;
+        }
+        let flow = self.flow_around_cell(x, y);
+        let fluid_count = flow.0 + flow.1 + flow.2 + flow.3;
+        if fluid_count == 0.0 {
+            return;
+        }
+
+        let xi = x as i32;
+        let yi = y as i32;
+
+        // Neighbour pressures (ghost = 0 outside domain).
+        let p_sum = self.pressure_at(xi, yi + 1) * flow.0   // top
+            + self.pressure_at(xi - 1, yi) * flow.1          // left
+            + self.pressure_at(xi + 1, yi) * flow.2          // right
+            + self.pressure_at(xi, yi - 1) * flow.3; // bottom
+
+        // Divergence (scaled by cell_size to get velocity sum).
+        let div = (self.velocities_x[(x + 1, y)] - self.velocities_x[(x, y)]) * flow.2
+            + (self.velocities_x[(x + 1, y)] - self.velocities_x[(x, y)]) * 0.0  // handled above
+            + self.velocities_x[(x + 1, y)] * flow.2
+            - self.velocities_x[(x, y)] * flow.1
+            + self.velocities_y[(x, y + 1)] * flow.0
+            - self.velocities_y[(x, y)] * flow.3;
+
+        // Standard Gauss-Seidel pressure update derived from the discrete
+        // incompressibility constraint: ∇·u = 0.
+        //   p[i,j] = ( Σ p_neighbour − ρ·h·div / dt ) / num_fluid_neighbours
+        self.pressure_map[(x, y)] =
+            (p_sum - self.density * self.cell_size * div / self.time_step) / fluid_count;
+    }
+
+    /// Subtract pressure gradient from velocity field (makes flow divergence-free).
+    fn update_velocities(&mut self) {
+        let k = self.time_step / (self.cell_size * self.density);
+        let (w, h) = self.cell_count;
+
+        // u-faces: skip x=0 (inflow set by caller).
+        for x in 1..=(w) {
+            for y in 0..h {
+                let p_right = self.pressure_at(x as i32, y as i32);
+                let p_left = self.pressure_at(x as i32 - 1, y as i32);
+                self.velocities_x[(x, y)] -= k * (p_right - p_left);
+            }
+        }
+
+        // v-faces: skip y=0 and y=h (walls enforced separately).
+        for x in 0..w {
+            for y in 1..h {
+                let p_top = self.pressure_at(x as i32, y as i32);
+                let p_bottom = self.pressure_at(x as i32, y as i32 - 1);
+                self.velocities_y[(x, y)] -= k * (p_top - p_bottom);
+            }
+        }
+    }
+
+    /// Subtract the mean pressure so it doesn't drift.
     fn anchor_pressure(&mut self) {
-        // Ancrer la pression : fixer P[0,0] = 0 comme référence
-        // et soustraire la moyenne pour stabiliser
-        let mean = self.pressure_map.sum() / (self.cell_count.0 * self.cell_count.1) as f32;
+        let n = (self.cell_count.0 * self.cell_count.1) as f32;
+        let mean = self.pressure_map.sum() / n;
         for (x, y) in self.pressure_map.indices() {
             self.pressure_map[(x, y)] -= mean;
         }
     }
 
-    pub fn update_velocities(&mut self) {
-        let k: f32 = self.time_step / (self.cell_size * self.density);
+    // ── Boundary conditions ───────────────────────────────────────────────────
 
-        // ---- Horizontal -----------
-        for (x, y) in self.velocities_x.indices() {
-            // if x == 0 {
-            //     self.velocities_x[(x, y)] = 20.0;
-            //     continue;
-            // }
-
-            // let edge_is_solid = self.is_solid(x, y)
-            //     || x.checked_sub(1)
-            //         .map(|px| self.is_solid(px, y))
-            //         .unwrap_or(true);
-            // if edge_is_solid {
-            //     self.velocities_x[(x, y)] = 0.0;
-            //     continue;
-            // }
-
-            let pressure_right = self.get_pressure(x, y);
-            let pressure_left = x
-                .checked_sub(1)
-                .map(|px| self.get_pressure(px, y))
-                .unwrap_or(0.0);
-            self.velocities_x[(x, y)] -= k * (pressure_right - pressure_left);
-        }
-
-        // ---- Vertical -------------
-        for (x, y) in self.velocities_y.indices() {
-            // let edge_is_solid = self.is_solid(x, y)
-            //     || y.checked_sub(1)
-            //         .map(|py| self.is_solid(x, py))
-            //         .unwrap_or(true);
-            // if edge_is_solid {
-            //     self.velocities_y[(x, y)] = 0.0;
-            //     continue;
-            // }
-
-            let pressure_top = self.get_pressure(x, y);
-            let pressure_bottom = y
-                .checked_sub(1)
-                .map(|py| self.get_pressure(x, py))
-                .unwrap_or(0.0);
-            self.velocities_y[(x, y)] -= k * (pressure_top - pressure_bottom);
+    /// No-penetration on top and bottom walls; open outflow on the right.
+    /// The left wall (inflow) is set by the caller in main every frame.
+    pub fn enforce_walls(&mut self) {
+        let (w, h) = self.cell_count;
+        for x in 0..w {
+            self.velocities_y[(x, 0)] = 0.0;
+            self.velocities_y[(x, h)] = 0.0;
         }
     }
 
-    pub fn gauss_seidel(&mut self) {
-        for _ in 0..10 {
-            self.pressure_solve();
-        }
+    // ── Public simulation step ────────────────────────────────────────────────
 
+    /// Full simulation step.  Call `inject_inflow` before and after.
+    pub fn step(&mut self, pressure_iters: usize) {
+        self.advect_velocities();
+        self.advect_smoke();
+        for _ in 0..pressure_iters {
+            self.pressure_sweep();
+        }
+        self.anchor_pressure();
         self.update_velocities();
+        self.enforce_walls();
     }
 
-    pub fn get_horizontal_velocity(&self, x: f32, y: f32) -> f32 {
-        let current_x = x.floor() as u32;
-        let ratio_x = x - current_x as f32;
-        let current_y = y.floor() as u32;
-        let left_velocity = self.velocities_x[(current_x, current_y)];
-        let right_velocity = self.velocities_x[(current_x + 1, current_y)];
-        left_velocity * (1.0 - ratio_x) + right_velocity * ratio_x
+    // ── Diagnostics ──────────────────────────────────────────────────────────
+
+    pub fn divergence_at(&self, x: u32, y: u32) -> f32 {
+        (self.velocities_x[(x + 1, y)] - self.velocities_x[(x, y)] + self.velocities_y[(x, y + 1)]
+            - self.velocities_y[(x, y)])
+            / self.cell_size
     }
 
-    pub fn get_vertical_velocity(&self, x: f32, y: f32) -> f32 {
-        let current_x = x.floor() as u32;
-        let current_y = y.floor() as u32;
-        let ratio_y = y - current_y as f32;
-        let top_velocity = self.velocities_y[(current_x, current_y)];
-        let bottom_velocity = self.velocities_y[(current_x, current_y + 1)];
-        top_velocity * (1.0 - ratio_y) + bottom_velocity * ratio_y
-    }
-
-    pub fn get_velocity(&self, pos: Vector2<f32>) -> Vector2<f32> {
-        Vector2::new(
-            self.get_horizontal_velocity(pos.x, pos.y),
-            self.get_vertical_velocity(pos.x, pos.y),
-        )
-    }
-
-    pub fn get_displacement(&self, pos: &Vector2<f32>) -> Vector2<f32> {
-        Vector2::new(
-            self.time_step * self.get_horizontal_velocity(pos.x, pos.y),
-            self.time_step * self.get_vertical_velocity(pos.x, pos.y),
-        )
-    }
-
-    fn left_edge_center_pos(&self, x: u32, y: u32) -> Vector2<f32> {
-        Vector2::new(x as f32 + 0.5, y as f32)
-    }
-
-    fn top_edge_center_pos(&self, x: u32, y: u32) -> Vector2<f32> {
-        Vector2::new(x as f32, y as f32 + 0.5)
-    }
-
-    pub fn advect_velocities(&mut self) {
-        // Horizontal advection (velocities_x)
-        for (x, y) in self.velocities_x.indices() {
-            // Skip rightmost boundary (x == cell_count.0)
-            if x == self.cell_count.0 {
-                continue;
-            }
-            if !self.is_fluid_edge(x, y, Left) {
-                continue;
-            }
-
-            let pos = self.left_edge_center_pos(x, y);
-            let velocity = self.get_displacement(&pos);
-            let prev_pos = pos - velocity;
-
-            if !(prev_pos.x < 0.0
-                || prev_pos.y < 0.0
-                || prev_pos.x >= self.cell_count.0 as f32
-                || prev_pos.y >= self.cell_count.1 as f32)
-            {
-                self.velocities_x[(x, y)] = self.get_horizontal_velocity(prev_pos.x, prev_pos.y);
+    pub fn max_divergence(&self) -> f32 {
+        let (w, h) = self.cell_count;
+        let mut max = 0.0f32;
+        for x in 0..w {
+            for y in 0..h {
+                max = max.max(self.divergence_at(x, y).abs());
             }
         }
-
-        // Vertical advection (velocities_y)
-        for (x, y) in self.velocities_y.indices() {
-            // Skip topmost boundary (y == cell_count.1)
-            if y == self.cell_count.1 {
-                continue;
-            }
-            if !self.is_fluid_edge(x, y, Down) {
-                continue;
-            }
-
-            let pos = self.top_edge_center_pos(x, y);
-            let velocity = self.get_displacement(&pos);
-            let prev_pos = pos - velocity;
-
-            if !(prev_pos.x < 0.0
-                || prev_pos.y < 0.0
-                || prev_pos.x >= self.cell_count.0 as f32
-                || prev_pos.y >= self.cell_count.1 as f32)
-            {
-                self.velocities_y[(x, y)] = self.get_vertical_velocity(prev_pos.x, prev_pos.y);
-            }
-        }
+        max
     }
 }
