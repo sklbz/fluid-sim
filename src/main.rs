@@ -17,14 +17,14 @@ const SCALE: usize = 8;
 /// Number of Gauss-Seidel pressure iterations per step.
 const PRESSURE_ITERS: usize = 80;
 /// Horizontal inflow speed on the left wall.
-const INFLOW_SPEED: f32 = 5.0;
+const INFLOW_SPEED: f32 = 15.0;
 /// Vertical band (fraction of height) that emits smoke.
 const SMOKE_LO: f32 = 0.35;
 const SMOKE_HI: f32 = 0.65;
 /// Frames to render in video mode.
-const VIDEO_FRAMES: usize = 300;
+const VIDEO_FRAMES: usize = 6000;
 /// FPS for video mode.
-const VIDEO_FPS: usize = 30;
+const VIDEO_FPS: usize = 200;
 
 const WIN_W: usize = GRID_W as usize * SCALE;
 const WIN_H: usize = GRID_H as usize * SCALE;
@@ -89,7 +89,7 @@ fn render(grid: &FluidGrid, buffer: &mut Vec<u32>) {
 /// Fast smoke → warm orange-white.
 /// No smoke   → near-black background with a faint blue tint from velocity.
 fn cell_color(density: f32, speed: f32) -> u32 {
-    let max_speed = INFLOW_SPEED * 2.5;
+    let max_speed = INFLOW_SPEED * 1.5;
     let t = (speed / max_speed).clamp(0.0, 1.0); // 0 = slow, 1 = fast
     let d = density;
 

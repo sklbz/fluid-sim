@@ -37,7 +37,7 @@ impl FluidGrid {
     pub fn new(cell_count: (u32, u32), cell_size: f32) -> FluidGrid {
         let (w, h) = cell_count;
         FluidGrid {
-            time_step: 0.1,
+            time_step: 0.05,
             density: 1.0,
             cell_count,
             cell_size,
