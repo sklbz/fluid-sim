@@ -1,4 +1,5 @@
 pub mod direction;
+pub mod display;
 pub mod fluid_sim;
 pub mod matrix;
 pub mod vector;

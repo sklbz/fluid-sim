@@ -1,21 +1,17 @@
-//! Fluid simulation — live window or video export.
+//! Fluid simulation — video export.
 //!
 //! Usage:
-//!   cargo run --release                        # live window (ESC to quit)
-//!   cargo run --release -- --video out.mp4     # render 300 frames to video
+//!   cargo run --release -- --video out.mp4     # render video
 //!
 //! Modélise la portance d'un profil NACA 4412 avec angle d'attaque.
 
-use fluid_sim::FluidGrid;
-use minifb::{Key, Window, WindowOptions};
+use fluid_sim::{FluidGrid, display::draw_text};
 
 // ── Simulation parameters ─────────────────────────────────────────────────────
 
-/// Grille agrandie pour mieux capturer le sillage et la couche limite.
 const GRID_W: u32 = 300;
 const GRID_H: u32 = 150;
 const CELL_SIZE: f32 = 1.0;
-
 /// Pixels par cellule (réduit pour tenir dans une fenêtre raisonnable).
 const SCALE: usize = 4;
 
@@ -33,6 +29,8 @@ const ANGLE_OF_ATTACK_DEG: f32 = 8.0;
 
 const VIDEO_FRAMES: usize = 600;
 const VIDEO_FPS: usize = 60;
+/// Nombre de frames entre chaque affichage de la moyenne de portance
+const LIFT_LOG_INTERVAL_FRAMES: usize = 20;
 
 const WIN_W: usize = GRID_W as usize * SCALE;
 const WIN_H: usize = GRID_H as usize * SCALE;
@@ -82,7 +80,6 @@ fn naca4412(x_norm: f32) -> (f32, f32) {
     let xl = x_norm + yt * theta.sin();
     let yl = yc - yt * theta.cos();
 
-    // On n'a besoin que des ordonnées (on interpole sur une grille cartésienne)
     let _ = (xu, xl);
     (yu, yl)
 }
@@ -97,24 +94,22 @@ fn build_airfoil(grid: &mut FluidGrid, aoa_deg: f32) {
     let (w, h) = grid.cell_count;
     let chord = CHORD as f32;
 
-    // Centre du profil dans la grille
-    let cx = w as f32 * 0.28; // bord d'attaque à ~28 % → bord de fuite à ~58 %
+    // Centre de rotation : bord d’attaque (point de référence)
+    let cx = w as f32 * 0.28;
     let cy = h as f32 * 0.50;
 
-    let aoa_rad = -aoa_deg.to_radians(); // signe : rotation CCW = bord d'attaque vers le haut
+    let aoa_rad = aoa_deg.to_radians(); // rotation positive = bord d’attaque vers le haut
     let (sin_a, cos_a) = (aoa_rad.sin(), aoa_rad.cos());
 
     for x in 0..w {
         for y in 0..h {
-            // Position de la cellule dans le repère du profil (non tourné)
             let dx = x as f32 + 0.5 - cx;
             let dy = y as f32 + 0.5 - cy;
 
-            // Rotation inverse pour se ramener dans le repère du profil
+            // Rotation inverse pour se ramener dans le repère du profil non pivoté
             let local_x = dx * cos_a + dy * sin_a;
             let local_y = -dx * sin_a + dy * cos_a;
 
-            // Coordonnée normalisée sur la corde
             let x_norm = local_x / chord;
 
             if x_norm < 0.0 || x_norm > 1.0 {
@@ -122,8 +117,6 @@ fn build_airfoil(grid: &mut FluidGrid, aoa_deg: f32) {
             }
 
             let (yu, yl) = naca4412(x_norm);
-
-            // Convertir en cellules
             let y_upper = yu * chord;
             let y_lower = yl * chord;
 
@@ -148,29 +141,37 @@ fn main() {
 
     if let Some(path) = video_out {
         run_video(&mut grid, &path);
-    } else {
-        run_window(&mut grid);
     }
 }
 
 // ── Inflow injection ──────────────────────────────────────────────────────────
 
 /// Injecte un écoulement uniforme sur toute la face gauche.
-/// On ajoute une légère composante verticale selon l'angle d'attaque
-/// (revient à simuler un vent incident incliné).
 fn inject_inflow(grid: &mut FluidGrid) {
     let h = grid.cell_count.1;
-    let aoa = ANGLE_OF_ATTACK_DEG.to_radians();
-    let vx = INFLOW_SPEED * aoa.cos();
-    let vy = INFLOW_SPEED * aoa.sin(); // positif = vers le haut
 
+    // Écoulement horizontal uniforme à gauche
     for y in 0..h {
-        grid.velocities_x[(0, y)] = vx;
+        grid.velocities_x[(0, y)] = INFLOW_SPEED;
     }
-    // La composante verticale s'applique sur la face y=0→h (face gauche)
-    // via les faces v de la colonne x=0.
+
+    // Composante verticale nulle à l’entrée
     for y in 0..=h {
-        grid.velocities_y[(0, y)] = vy;
+        grid.velocities_y[(0, y)] = 0.0;
+    }
+}
+
+fn inject_outflow(grid: &mut FluidGrid) {
+    let (w, h) = grid.cell_count;
+
+    // Écoulement horizontal uniforme en sortie
+    for y in 0..h {
+        grid.velocities_x[(w - 1, y)] = INFLOW_SPEED;
+    }
+
+    // Composante verticale nulle en sortie
+    for y in 0..=h {
+        grid.velocities_y[(w - 1, y)] = 0.0;
     }
 }
 
@@ -178,7 +179,7 @@ fn inject_inflow(grid: &mut FluidGrid) {
 
 /// Colorisation :
 ///   - Gris foncé  = cellule solide (profil)
-///   - Rouge       = vitesse vers la droite (surpression extrados)
+///   - Rouge       = vitesse vers la droite (surpression)
 ///   - Bleu        = vitesse vers la gauche
 ///   - Vert        = vitesse vers le haut (portance)
 ///   - Jaune       = vitesse vers le bas (sillage)
@@ -223,33 +224,6 @@ fn velocity_color(vx: f32, vy: f32) -> u32 {
     ((r_final * 255.0) as u32) << 16 | ((g_final * 255.0) as u32) << 8 | (b_final * 255.0) as u32
 }
 
-// ── Live window mode ──────────────────────────────────────────────────────────
-
-fn run_window(grid: &mut FluidGrid) {
-    let mut window = Window::new(
-        "Fluid sim — NACA 4412  (ESC = quit)",
-        WIN_W,
-        WIN_H,
-        WindowOptions::default(),
-    )
-    .expect("Failed to create window");
-
-    let mut buffer = vec![0u32; WIN_W * WIN_H];
-    let mut frame = 0usize;
-
-    while window.is_open() && !window.is_key_down(Key::Escape) {
-        inject_inflow(grid);
-        grid.step(PRESSURE_ITERS);
-        render(grid, &mut buffer);
-        window.update_with_buffer(&buffer, WIN_W, WIN_H).unwrap();
-
-        frame += 1;
-        if frame % 60 == 0 {
-            println!("frame {frame}  div={:.4}", grid.max_divergence());
-        }
-    }
-}
-
 // ── Video export mode ─────────────────────────────────────────────────────────
 
 fn run_video(grid: &mut FluidGrid, output_path: &str) {
@@ -258,6 +232,10 @@ fn run_video(grid: &mut FluidGrid, output_path: &str) {
 
     println!("Rendering {VIDEO_FRAMES} frames → {output_path}");
     println!("(requires ffmpeg in PATH)");
+    println!(
+        "Displaying lift average every {} frames",
+        LIFT_LOG_INTERVAL_FRAMES
+    );
 
     let mut ffmpeg = Command::new("ffmpeg")
         .args([
@@ -287,9 +265,51 @@ fn run_video(grid: &mut FluidGrid, output_path: &str) {
     let stdin = ffmpeg.stdin.as_mut().unwrap();
     let mut buffer = vec![0u32; WIN_W * WIN_H];
 
+    // Statistiques de portance
+    let mut lift_sum = 0.0;
+    let mut frame_count_since_last_log = 0;
+    let mut total_frames_logged = 0;
+
     for i in 0..VIDEO_FRAMES {
         inject_inflow(grid);
+        inject_outflow(grid);
         grid.step(PRESSURE_ITERS);
+
+        // Calculer la portance
+        let (_, lift) = grid.compute_forces();
+
+        // Afficher la portance en haut à gauche
+        draw_text(
+            &mut buffer,
+            WIN_W,
+            WIN_H,
+            &format!("Lift: {:.2}", lift),
+            10,
+            10,
+            0xFFFFFF,
+        );
+        // Accumuler la portance
+        lift_sum += lift;
+        frame_count_since_last_log += 1;
+
+        // Afficher la moyenne tous les N frames
+        if frame_count_since_last_log >= LIFT_LOG_INTERVAL_FRAMES {
+            let avg_lift = lift_sum / frame_count_since_last_log as f32;
+            total_frames_logged += frame_count_since_last_log;
+
+            println!(
+                "[Frames {}..{}] Portance moyenne = {:.4}  (sur {} frames)",
+                total_frames_logged - frame_count_since_last_log + 1,
+                total_frames_logged,
+                avg_lift,
+                frame_count_since_last_log
+            );
+
+            // Réinitialiser pour le prochain intervalle
+            lift_sum = 0.0;
+            frame_count_since_last_log = 0;
+        }
+
         render(grid, &mut buffer);
 
         let bytes: Vec<u8> = buffer
@@ -305,6 +325,7 @@ fn run_video(grid: &mut FluidGrid, output_path: &str) {
 
         stdin.write_all(&bytes).expect("Failed to write frame");
 
+        // Afficher la progression tous les 60 frames vidéo
         if (i + 1) % VIDEO_FPS == 0 {
             println!(
                 "  {}/{VIDEO_FRAMES} frames  (div={:.4})",
@@ -312,6 +333,19 @@ fn run_video(grid: &mut FluidGrid, output_path: &str) {
                 grid.max_divergence()
             );
         }
+    }
+
+    // Afficher la moyenne du dernier intervalle partiel s'il existe
+    if frame_count_since_last_log > 0 {
+        let avg_lift = lift_sum / frame_count_since_last_log as f32;
+        total_frames_logged += frame_count_since_last_log;
+        println!(
+            "[Frames {}..{}] Portance moyenne = {:.4}  (sur {} frames, intervalle partiel)",
+            total_frames_logged - frame_count_since_last_log + 1,
+            total_frames_logged,
+            avg_lift,
+            frame_count_since_last_log
+        );
     }
 
     drop(ffmpeg.stdin.take());

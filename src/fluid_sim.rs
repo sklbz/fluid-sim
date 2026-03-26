@@ -73,43 +73,29 @@ impl FluidGrid {
                     // Pression sur la face (on prend la pression de la cellule voisine)
                     let p = self.pressure_at(x as i32 - 1, y as i32);
                     fx += p * dx; // contribution horizontale : p * n_x * surface (dx * 1)
-                    // Le cisaillement sur cette face (viscosité) : τ_xy ~ mu * du/dy
-                    // Ici on utilise une approximation simple
-                    let shear = self.shear_force(x, y, Left);
-                    fx += shear.0;
-                    fy += shear.1;
                 }
 
                 // Face droite : x+1, y (normale (1, 0))
                 if !self.is_solid(x + 1, y) {
                     let p = self.pressure_at(x as i32 + 1, y as i32);
                     fx -= p * dx; // car n_x = +1, la force est -p*dx (car p agit dans la direction opposée)
-                    let shear = self.shear_force(x, y, Right);
-                    fx += shear.0;
-                    fy += shear.1;
                 }
 
                 // Face basse : x, y (normale (0, -1))
                 if !self.is_solid(x, y.saturating_sub(1)) {
                     let p = self.pressure_at(x as i32, y as i32 - 1);
                     fy += p * dx; // n_y = -1, donc force = p * dx (vers le bas)
-                    let shear = self.shear_force(x, y, Down);
-                    fx += shear.0;
-                    fy += shear.1;
                 }
 
                 // Face haute : x, y+1 (normale (0, 1))
                 if !self.is_solid(x, y + 1) {
                     let p = self.pressure_at(x as i32, y as i32 + 1);
                     fy -= p * dx; // n_y = +1, force = -p*dx (vers le haut)
-                    let shear = self.shear_force(x, y, Up);
-                    fx += shear.0;
-                    fy += shear.1;
                 }
             }
         }
 
-        // Pour que la portance soit positive vers le haut, on a déjà le signe correct
+        // portance positive vers le haut
         (fx, fy)
     }
 
