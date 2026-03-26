@@ -9,7 +9,7 @@
 //!   1. Caller sets inflow / boundary values.
 //!   2. `advect_velocities`  – semi-Lagrangian advection of u and v.
 //!   3. `pressure_projection`– Gauss-Seidel pressure solve + velocity correction.
-//!   4. `enforce_walls`      – hard-set no-penetration on top/bottom walls.
+//!   4. `enforce_walls`      – hard-set no-penetration on top/bottom walls and solid cells.
 
 use crate::Direction::{self, Down, Left, Right, Up};
 use crate::Matrix;
@@ -28,6 +28,8 @@ pub struct FluidGrid {
     pub velocities_y: Matrix<f32>,
     /// Pressure at cell centres.        Size: width × height.
     pub pressure_map: Matrix<f32>,
+    /// Solid mask: true = solid obstacle (no flow inside).  Size: width × height.
+    pub solid: Matrix<bool>,
 }
 
 impl FluidGrid {
@@ -41,13 +43,81 @@ impl FluidGrid {
             velocities_x: Matrix::new(w + 1, h, 0.5),
             velocities_y: Matrix::new(w, h + 1, 0.5),
             pressure_map: Matrix::new(w, h, 0.0),
+            solid: Matrix::new(w, h, false),
         }
+    }
+    /// Calcule la force exercée par le fluide sur le solide.
+    /// Retourne (force_horizontale, force_verticale) = (traînée, portance)
+    /// (forces par unité de profondeur, car 2D)
+    pub fn compute_forces(&self) -> (f32, f32) {
+        let mut fx = 0.0;
+        let mut fy = 0.0;
+        let (w, h) = self.cell_count;
+        let dx = self.cell_size;
+        let mu = 0.0; // viscosité dynamique (non utilisée actuellement)
+        // Si vous voulez inclure la viscosité, il faudrait définir mu = densité * nu
+        // Mais votre simulateur n'a pas de viscosité explicite, donc on met 0.
+
+        // On parcourt toutes les cellules solides
+        for x in 0..w {
+            for y in 0..h {
+                if !self.solid[(x, y)] {
+                    continue;
+                }
+
+                // Pour chaque face de la cellule, on regarde si le voisin est du fluide
+                // Si oui, on ajoute la contribution de pression et de cisaillement.
+
+                // Face gauche : x, y (normale sortante du solide : (-1, 0))
+                if !self.is_solid(x.saturating_sub(1), y) {
+                    // Pression sur la face (on prend la pression de la cellule voisine)
+                    let p = self.pressure_at(x as i32 - 1, y as i32);
+                    fx += p * dx; // contribution horizontale : p * n_x * surface (dx * 1)
+                    // Le cisaillement sur cette face (viscosité) : τ_xy ~ mu * du/dy
+                    // Ici on utilise une approximation simple
+                    let shear = self.shear_force(x, y, Left);
+                    fx += shear.0;
+                    fy += shear.1;
+                }
+
+                // Face droite : x+1, y (normale (1, 0))
+                if !self.is_solid(x + 1, y) {
+                    let p = self.pressure_at(x as i32 + 1, y as i32);
+                    fx -= p * dx; // car n_x = +1, la force est -p*dx (car p agit dans la direction opposée)
+                    let shear = self.shear_force(x, y, Right);
+                    fx += shear.0;
+                    fy += shear.1;
+                }
+
+                // Face basse : x, y (normale (0, -1))
+                if !self.is_solid(x, y.saturating_sub(1)) {
+                    let p = self.pressure_at(x as i32, y as i32 - 1);
+                    fy += p * dx; // n_y = -1, donc force = p * dx (vers le bas)
+                    let shear = self.shear_force(x, y, Down);
+                    fx += shear.0;
+                    fy += shear.1;
+                }
+
+                // Face haute : x, y+1 (normale (0, 1))
+                if !self.is_solid(x, y + 1) {
+                    let p = self.pressure_at(x as i32, y as i32 + 1);
+                    fy -= p * dx; // n_y = +1, force = -p*dx (vers le haut)
+                    let shear = self.shear_force(x, y, Up);
+                    fx += shear.0;
+                    fy += shear.1;
+                }
+            }
+        }
+
+        // Pour que la portance soit positive vers le haut, on a déjà le signe correct
+        (fx, fy)
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    /// Returns true if the cell is outside the domain OR is a solid obstacle.
     fn is_solid(&self, x: u32, y: u32) -> bool {
-        x >= self.cell_count.0 || y >= self.cell_count.1
+        x >= self.cell_count.0 || y >= self.cell_count.1 || self.solid[(x, y)]
     }
 
     fn is_fluid_edge(&self, x: u32, y: u32, dir: Direction) -> bool {
@@ -78,37 +148,31 @@ impl FluidGrid {
         )
     }
 
-    /// Pressure at (x,y), returning 0 for out-of-domain cells (ghost pressure = 0).
+    /// Pressure at (x,y), returning 0 for out-of-domain or solid cells.
     fn pressure_at(&self, x: i32, y: i32) -> f32 {
         if x < 0 || y < 0 || x >= self.cell_count.0 as i32 || y >= self.cell_count.1 as i32 {
-            0.0
-        } else {
-            self.pressure_map[(x as u32, y as u32)]
+            return 0.0;
         }
+        if self.solid[(x as u32, y as u32)] {
+            return 0.0;
+        }
+        self.pressure_map[(x as u32, y as u32)]
     }
 
     // ── Velocity sampling ────────────────────────────────────────────────────
 
-    /// Sample u (x-velocity) at arbitrary grid position (px, py).
-    ///
-    /// u is stored at face (i, j+0.5), so in storage coordinates the sample
-    /// point becomes (px,  py − 0.5).
     pub fn sample_vx(&self, px: f32, py: f32) -> f32 {
         let gx = px.clamp(0.0, self.cell_count.0 as f32);
         let gy = (py - 0.5).clamp(0.0, (self.cell_count.1 - 1) as f32);
         bilinear(&self.velocities_x, gx, gy)
     }
 
-    /// Sample v (y-velocity) at arbitrary grid position (px, py).
-    ///
-    /// v is stored at face (i+0.5, j), so storage coordinates become (px − 0.5, py).
     pub fn sample_vy(&self, px: f32, py: f32) -> f32 {
         let gx = (px - 0.5).clamp(0.0, (self.cell_count.0 - 1) as f32);
         let gy = py.clamp(0.0, self.cell_count.1 as f32);
         bilinear(&self.velocities_y, gx, gy)
     }
 
-    /// Velocity vector at cell-centre position.
     pub fn velocity_at_center(&self, x: u32, y: u32) -> (f32, f32) {
         let px = x as f32 + 0.5;
         let py = y as f32 + 0.5;
@@ -117,19 +181,12 @@ impl FluidGrid {
 
     // ── Advection ────────────────────────────────────────────────────────────
 
-    /// Semi-Lagrangian advection of both velocity components.
-    ///
-    /// Fixed bugs vs. original:
-    ///   1. Uses a clone so earlier cells don't corrupt later ones.
-    ///   2. Face positions are correct: u-face at (x, y+0.5), v-face at (x+0.5, y).
-    ///   3. Bilinear interpolation in both axes.
     pub fn advect_velocities(&mut self) {
         let vx_old = self.velocities_x.clone();
         let vy_old = self.velocities_y.clone();
         let (w, h) = self.cell_count;
         let dt = self.time_step;
 
-        // Closures sampling from the *old* (pre-step) velocity fields.
         let old_vx = |px: f32, py: f32| -> f32 {
             let gx = px.clamp(0.0, w as f32);
             let gy = (py - 0.5).clamp(0.0, (h - 1) as f32);
@@ -142,10 +199,14 @@ impl FluidGrid {
         };
 
         // ---- Advect u (x-faces) -------------------------------------------------
-        // u[(x,y)] lives at continuous position (x, y+0.5).
-        // Skip x=0 (inflow, set by caller each step).
         for x in 1..=(w) {
             for y in 0..h {
+                // Skip faces adjacent to solid cells (will be zeroed by enforce_solid).
+                let left_solid = x > 0 && x <= w && self.solid[(x - 1, y)];
+                let right_solid = x < w && self.solid[(x, y)];
+                if left_solid || right_solid {
+                    continue;
+                }
                 let px = x as f32;
                 let py = y as f32 + 0.5;
                 let vel_x = old_vx(px, py);
@@ -157,10 +218,13 @@ impl FluidGrid {
         }
 
         // ---- Advect v (y-faces) -------------------------------------------------
-        // v[(x,y)] lives at continuous position (x+0.5, y).
-        // Skip y=0 and y=h (top/bottom walls, enforced later).
         for x in 0..w {
             for y in 1..h {
+                let below_solid = self.solid[(x, y - 1)];
+                let above_solid = self.solid[(x, y)];
+                if below_solid || above_solid {
+                    continue;
+                }
                 let px = x as f32 + 0.5;
                 let py = y as f32;
                 let vel_x = old_vx(px, py);
@@ -174,7 +238,6 @@ impl FluidGrid {
 
     // ── Pressure projection ───────────────────────────────────────────────────
 
-    /// One Gauss-Seidel sweep over all cells.
     fn pressure_sweep(&mut self) {
         for x in 0..self.cell_count.0 {
             for y in 0..self.cell_count.1 {
@@ -196,33 +259,23 @@ impl FluidGrid {
         let xi = x as i32;
         let yi = y as i32;
 
-        // Neighbour pressures (ghost = 0 outside domain).
         let p_sum = self.pressure_at(xi, yi + 1) * flow.0   // top
             + self.pressure_at(xi - 1, yi) * flow.1          // left
             + self.pressure_at(xi + 1, yi) * flow.2          // right
             + self.pressure_at(xi, yi - 1) * flow.3; // bottom
 
-        // Divergence (scaled by cell_size to get velocity sum).
-        let div = (self.velocities_x[(x + 1, y)] - self.velocities_x[(x, y)]) * flow.2
-            + (self.velocities_x[(x + 1, y)] - self.velocities_x[(x, y)]) * 0.0  // handled above
-            + self.velocities_x[(x + 1, y)] * flow.2
-            - self.velocities_x[(x, y)] * flow.1
+        let div = self.velocities_x[(x + 1, y)] * flow.2 - self.velocities_x[(x, y)] * flow.1
             + self.velocities_y[(x, y + 1)] * flow.0
             - self.velocities_y[(x, y)] * flow.3;
 
-        // Standard Gauss-Seidel pressure update derived from the discrete
-        // incompressibility constraint: ∇·u = 0.
-        //   p[i,j] = ( Σ p_neighbour − ρ·h·div / dt ) / num_fluid_neighbours
         self.pressure_map[(x, y)] =
             (p_sum - self.density * self.cell_size * div / self.time_step) / fluid_count;
     }
 
-    /// Subtract pressure gradient from velocity field (makes flow divergence-free).
     fn update_velocities(&mut self) {
         let k = self.time_step / (self.cell_size * self.density);
         let (w, h) = self.cell_count;
 
-        // u-faces: skip x=0 (inflow set by caller).
         for x in 1..=(w) {
             for y in 0..h {
                 let p_right = self.pressure_at(x as i32, y as i32);
@@ -231,7 +284,6 @@ impl FluidGrid {
             }
         }
 
-        // v-faces: skip y=0 and y=h (walls enforced separately).
         for x in 0..w {
             for y in 1..h {
                 let p_top = self.pressure_at(x as i32, y as i32);
@@ -241,7 +293,6 @@ impl FluidGrid {
         }
     }
 
-    /// Subtract the mean pressure so it doesn't drift.
     fn anchor_pressure(&mut self) {
         let n = (self.cell_count.0 * self.cell_count.1) as f32;
         let mean = self.pressure_map.sum() / n;
@@ -252,19 +303,34 @@ impl FluidGrid {
 
     // ── Boundary conditions ───────────────────────────────────────────────────
 
-    /// No-penetration on top and bottom walls; open outflow on the right.
-    /// The left wall (inflow) is set by the caller in main every frame.
+    /// No-penetration on domain walls AND solid obstacle surfaces.
     pub fn enforce_walls(&mut self) {
         let (w, h) = self.cell_count;
+
+        // Top / bottom domain walls (y-velocity only).
         for x in 0..w {
             self.velocities_y[(x, 0)] = 0.0;
             self.velocities_y[(x, h)] = 0.0;
+        }
+
+        // Solid obstacle: zero all velocity components that touch a solid cell.
+        for x in 0..w {
+            for y in 0..h {
+                if !self.solid[(x, y)] {
+                    continue;
+                }
+                // Zero the four surrounding face velocities.
+                self.velocities_x[(x, y)] = 0.0;
+                self.velocities_x[(x + 1, y)] = 0.0;
+                self.velocities_y[(x, y)] = 0.0;
+                self.velocities_y[(x, y + 1)] = 0.0;
+                self.pressure_map[(x, y)] = 0.0;
+            }
         }
     }
 
     // ── Public simulation step ────────────────────────────────────────────────
 
-    /// Full simulation step.  Call `inject_inflow` before and after.
     pub fn step(&mut self, pressure_iters: usize) {
         self.advect_velocities();
         for _ in 0..pressure_iters {
@@ -288,7 +354,9 @@ impl FluidGrid {
         let mut max = 0.0f32;
         for x in 0..w {
             for y in 0..h {
-                max = max.max(self.divergence_at(x, y).abs());
+                if !self.solid[(x, y)] {
+                    max = max.max(self.divergence_at(x, y).abs());
+                }
             }
         }
         max
