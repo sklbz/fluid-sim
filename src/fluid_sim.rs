@@ -8,9 +8,8 @@
 //! Simulation step (per frame):
 //!   1. Caller sets inflow / boundary values.
 //!   2. `advect_velocities`  – semi-Lagrangian advection of u and v.
-//!   3. `advect_smoke`       – advect the dye scalar.
-//!   4. `pressure_projection`– Gauss-Seidel pressure solve + velocity correction.
-//!   5. `enforce_walls`      – hard-set no-penetration on top/bottom walls.
+//!   3. `pressure_projection`– Gauss-Seidel pressure solve + velocity correction.
+//!   4. `enforce_walls`      – hard-set no-penetration on top/bottom walls.
 
 use crate::Direction::{self, Down, Left, Right, Up};
 use crate::Matrix;
@@ -29,22 +28,19 @@ pub struct FluidGrid {
     pub velocities_y: Matrix<f32>,
     /// Pressure at cell centres.        Size: width × height.
     pub pressure_map: Matrix<f32>,
-    /// Advected dye / smoke scalar.     Size: width × height.  Range [0,1].
-    pub smoke: Matrix<f32>,
 }
 
 impl FluidGrid {
     pub fn new(cell_count: (u32, u32), cell_size: f32) -> FluidGrid {
         let (w, h) = cell_count;
         FluidGrid {
-            time_step: 0.05,
+            time_step: 0.1,
             density: 1.0,
             cell_count,
             cell_size,
             velocities_x: Matrix::new(w + 1, h, 0.0),
             velocities_y: Matrix::new(w, h + 1, 0.0),
             pressure_map: Matrix::new(w, h, 0.0),
-            smoke: Matrix::new(w, h, 0.0),
         }
     }
 
@@ -176,28 +172,6 @@ impl FluidGrid {
         }
     }
 
-    /// Semi-Lagrangian advection of the smoke scalar.
-    pub fn advect_smoke(&mut self) {
-        let smoke_old = self.smoke.clone();
-        let (w, h) = self.cell_count;
-        let dt = self.time_step;
-
-        for x in 0..w {
-            for y in 0..h {
-                // Cell centre in grid space.
-                let px = x as f32 + 0.5;
-                let py = y as f32 + 0.5;
-                let vx = self.sample_vx(px, py);
-                let vy = self.sample_vy(px, py);
-                // Trace backward.
-                let prev_px = (px - dt * vx).clamp(0.5, w as f32 - 0.5);
-                let prev_py = (py - dt * vy).clamp(0.5, h as f32 - 0.5);
-                // Convert to smoke-array coordinates (smoke[(i,j)] sits at (i+0.5, j+0.5)).
-                self.smoke[(x, y)] = bilinear(&smoke_old, prev_px - 0.5, prev_py - 0.5);
-            }
-        }
-    }
-
     // ── Pressure projection ───────────────────────────────────────────────────
 
     /// One Gauss-Seidel sweep over all cells.
@@ -293,7 +267,6 @@ impl FluidGrid {
     /// Full simulation step.  Call `inject_inflow` before and after.
     pub fn step(&mut self, pressure_iters: usize) {
         self.advect_velocities();
-        self.advect_smoke();
         for _ in 0..pressure_iters {
             self.pressure_sweep();
         }

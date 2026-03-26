@@ -17,14 +17,11 @@ const SCALE: usize = 8;
 /// Number of Gauss-Seidel pressure iterations per step.
 const PRESSURE_ITERS: usize = 80;
 /// Horizontal inflow speed on the left wall.
-const INFLOW_SPEED: f32 = 15.0;
-/// Vertical band (fraction of height) that emits smoke.
-const SMOKE_LO: f32 = 0.35;
-const SMOKE_HI: f32 = 0.65;
+const INFLOW_SPEED: f32 = 5.0;
 /// Frames to render in video mode.
-const VIDEO_FRAMES: usize = 6000;
+const VIDEO_FRAMES: usize = 3000;
 /// FPS for video mode.
-const VIDEO_FPS: usize = 200;
+const VIDEO_FPS: usize = 60;
 
 const WIN_W: usize = GRID_W as usize * SCALE;
 const WIN_H: usize = GRID_H as usize * SCALE;
@@ -42,8 +39,6 @@ fn main() {
 
     if let Some(path) = video_out {
         run_video(&mut grid, &path);
-    } else {
-        run_live(&mut grid);
     }
 }
 
@@ -51,11 +46,8 @@ fn main() {
 
 fn inject_inflow(grid: &mut FluidGrid) {
     let h = grid.cell_count.1;
-    let lo = (h as f32 * SMOKE_LO) as u32;
-    let hi = (h as f32 * SMOKE_HI) as u32;
     for y in 0..h {
         grid.velocities_x[(0, y)] = INFLOW_SPEED;
-        grid.smoke[(0, y)] = if y >= lo && y < hi { 1.0 } else { 0.0 };
     }
 }
 
@@ -66,12 +58,9 @@ fn render(grid: &FluidGrid, buffer: &mut Vec<u32>) {
 
     for x in 0..w {
         for y in 0..h {
-            let smoke = grid.smoke[(x as u32, y as u32)].clamp(0.0, 1.0);
             let (vx, vy) = grid.velocity_at_center(x as u32, y as u32);
-            let speed = (vx * vx + vy * vy).sqrt();
-            let color = cell_color(smoke, speed);
+            let color = velocity_color(vx, vy);
 
-            // Flip y so that y=0 appears at the bottom of the screen.
             let screen_y = (h - 1 - y) * SCALE;
             let screen_x = x * SCALE;
             for dy in 0..SCALE {
@@ -83,69 +72,34 @@ fn render(grid: &FluidGrid, buffer: &mut Vec<u32>) {
     }
 }
 
-/// Smoke density + speed → colour.
-///
-/// Slow smoke → deep blue-white.
-/// Fast smoke → warm orange-white.
-/// No smoke   → near-black background with a faint blue tint from velocity.
-fn cell_color(density: f32, speed: f32) -> u32 {
-    let max_speed = INFLOW_SPEED * 1.5;
-    let t = (speed / max_speed).clamp(0.0, 1.0); // 0 = slow, 1 = fast
-    let d = density;
+/// Visualisation des vitesses :
+/// - Rouge = mouvement vers la droite
+/// - Bleu = mouvement vers la gauche
+/// - Vert = mouvement vers le haut
+/// - Jaune = mouvement vers le bas
+/// - Intensité = vitesse (plus rapide = plus brillant)
+fn velocity_color(vx: f32, vy: f32) -> u32 {
+    let max_speed = INFLOW_SPEED * 1.2;
+    let nx = (vx / max_speed).clamp(-1.0, 1.0);
+    let ny = (vy / max_speed).clamp(-1.0, 1.0);
 
-    // Smoke colour: lerp blue-white → orange-white based on local speed.
-    let sr = lerp(0.35, 1.00, t) * d;
-    let sg = lerp(0.55, 0.75, t) * d;
-    let sb = lerp(1.00, 0.25, t) * d;
+    // Composantes directionnelles
+    let r = if nx > 0.0 { nx } else { 0.0 }; // Droite = rouge
+    let b = if nx < 0.0 { -nx } else { 0.0 }; // Gauche = bleu
+    let g = if ny > 0.0 { ny } else { 0.0 }; // Haut = vert
+    let y = if ny < 0.0 { -ny } else { 0.0 }; // Bas = jaune (rouge+vert)
 
-    // Background: faint blue glow proportional to speed (shows flow even without smoke).
-    let bg = (t * 0.12).min(1.0);
-    let br = bg * 0.1;
-    let bg_ = bg * 0.2;
-    let bb = bg * 0.6;
+    // Mélanger les composantes
+    let r_final = (r + y * 0.8).clamp(0.0, 1.0);
+    let g_final = (g + y * 0.6).clamp(0.0, 1.0);
+    let b_final = b.clamp(0.0, 1.0);
 
-    let r = ((sr + br).clamp(0.0, 1.0) * 255.0) as u32;
-    let g = ((sg + bg_).clamp(0.0, 1.0) * 255.0) as u32;
-    let b = ((sb + bb).clamp(0.0, 1.0) * 255.0) as u32;
-    (r << 16) | (g << 8) | b
+    ((r_final * 255.0) as u32) << 16 | ((g_final * 255.0) as u32) << 8 | ((b_final * 255.0) as u32)
 }
 
 #[inline]
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
-}
-
-// ── Live window mode ──────────────────────────────────────────────────────────
-
-fn run_live(grid: &mut FluidGrid) {
-    let mut window = Window::new(
-        "Fluid Simulation  |  ESC to quit",
-        WIN_W,
-        WIN_H,
-        WindowOptions::default(),
-    )
-    .expect("Could not open window");
-
-    window.set_target_fps(60);
-    let mut buffer = vec![0u32; WIN_W * WIN_H];
-    let mut frame = 0u64;
-
-    while window.is_open() && !window.is_key_down(Key::Escape) {
-        inject_inflow(grid);
-        grid.step(PRESSURE_ITERS);
-
-        render(grid, &mut buffer);
-        window.update_with_buffer(&buffer, WIN_W, WIN_H).unwrap();
-
-        if frame % 60 == 0 {
-            println!(
-                "frame {} | max divergence: {:.4}",
-                frame,
-                grid.max_divergence()
-            );
-        }
-        frame += 1;
-    }
 }
 
 // ── Video export mode ─────────────────────────────────────────────────────────
